@@ -126,7 +126,7 @@ async def discord_notify(msg):
             if r.status_code >= 400:
                 print(f"Discord webhook failed ({r.status_code}): {r.text}")
     except Exception as e:
-        print(f"Discord webhook error: {e}")
+        print(f"Discord webhook error: {repr(e)}")
 
 
 def is_ai_post(post):
