@@ -91,7 +91,18 @@ async function openSearch(id) {
     const total = data.post_ids.length
     const scannedCount = Object.keys(data.scanned).length
     const allScanned = scannedCount >= total
-    $("#detail-stats").textContent = `${total} posts | ${scannedCount} scanned`
+    const typeCounts = {}
+    for (const s of Object.values(data.scanned)) {
+      if (s.exif_type) {
+        const name = EXIF_NAMES[s.exif_type] || "?"
+        typeCounts[name] = (typeCounts[name] || 0) + 1
+      }
+    }
+    const typeParts = Object.entries(typeCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, n]) => `${n} ${name}`)
+    const statParts = [`${scannedCount}/${total} scanned`, ...typeParts]
+    $("#detail-stats").textContent = statParts.join(" | ")
 
     const scanBtn = $("#btn-scan")
     if (allScanned) {
