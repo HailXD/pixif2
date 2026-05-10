@@ -98,12 +98,12 @@ async def init_db():
     await turso_execute(
         [
             {
-                "sql": "CREATE TABLE IF NOT EXISTS searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER)"
+                "sql": "CREATE TABLE IF NOT EXISTS pi_searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER)"
             },
             {
-                "sql": "CREATE TABLE IF NOT EXISTS scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
+                "sql": "CREATE TABLE IF NOT EXISTS pi_scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
-            {"sql": "DELETE FROM searches"},
+            {"sql": "DELETE FROM pi_searches"},
         ]
     )
 
@@ -342,7 +342,7 @@ async def save_scan_results(results):
         short_url = url.replace(IMG_BASE, "", 1) if url else ""
         stmts.append(
             {
-                "sql": "INSERT OR REPLACE INTO scans (post_id, url, exif_type) VALUES (?, ?, ?)",
+                "sql": "INSERT OR REPLACE INTO pi_scans (post_id, url, exif_type) VALUES (?, ?, ?)",
                 "args": [
                     {"type": "text", "value": str(post_id)},
                     {"type": "text", "value": short_url},
@@ -365,7 +365,7 @@ async def get_scanned_post_ids(post_ids):
     for chunk in chunks:
         placeholders = ",".join("?" for _ in chunk)
         stmt = {
-            "sql": f"SELECT post_id, url, exif_type FROM scans WHERE post_id IN ({placeholders})",
+            "sql": f"SELECT post_id, url, exif_type FROM pi_scans WHERE post_id IN ({placeholders})",
             "args": [{"type": "text", "value": str(pid)} for pid in chunk],
         }
         resp = await turso_execute([stmt])
@@ -391,7 +391,7 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
     try:
         post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(post_ids)},
@@ -421,7 +421,7 @@ async def bg_user_task(search_id, user_ids, phpsessid):
             all_post_ids.extend(r["post_ids"])
         all_post_ids = list(dict.fromkeys(all_post_ids))
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(all_post_ids)},
@@ -470,7 +470,7 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
     try:
         post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(post_ids)},
@@ -556,7 +556,7 @@ async def scan_search(req: ScanRequest, bg: BackgroundTasks):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids FROM searches WHERE id = ?",
+                "sql": "SELECT post_ids FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": req.search_id}],
             }
         ]
@@ -581,7 +581,7 @@ async def list_searches():
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, created_at FROM searches ORDER BY created_at DESC LIMIT 100"
+                "sql": "SELECT id, created_at FROM pi_searches ORDER BY created_at DESC LIMIT 100"
             }
         ]
     )
@@ -605,7 +605,7 @@ async def get_search(search_id: str):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, post_ids, created_at FROM searches WHERE id = ?",
+                "sql": "SELECT id, post_ids, created_at FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -632,7 +632,7 @@ async def get_results(search_id: str):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids FROM searches WHERE id = ?",
+                "sql": "SELECT post_ids FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
