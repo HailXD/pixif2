@@ -3,7 +3,6 @@ const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const USER_ID_RE = /^\s*[\d\s,]+\s*$/
 
-let progressTimer = null
 
 $$(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
@@ -12,8 +11,7 @@ $$(".tab").forEach(tab => {
     tab.classList.add("active")
     $(`#${tab.dataset.tab}`).classList.add("active")
     if (tab.dataset.tab === "explorer") loadSearches()
-    if (tab.dataset.tab === "progress") startProgress()
-    else stopProgress()
+    if (tab.dataset.tab === "progress") loadProgress()
   })
 })
 
@@ -67,10 +65,16 @@ async function loadSearches() {
       return `<div class="search-item" data-id="${s.id}">
         <span class="id">${s.id}</span>
         <span class="time">${ts}</span>
+        <span class="search-actions">
+          <button class="btn-icon btn-rename" title="Rename">&#9998;</button>
+          <button class="btn-icon btn-delete" title="Delete">&times;</button>
+        </span>
       </div>`
     }).join("")
     list.querySelectorAll(".search-item").forEach(el => {
-      el.addEventListener("click", () => openSearch(el.dataset.id))
+      el.querySelector(".id").addEventListener("click", () => openSearch(el.dataset.id))
+      el.querySelector(".btn-rename").addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
+      el.querySelector(".btn-delete").addEventListener("click", e => { e.stopPropagation(); deleteSearch(el.dataset.id) })
     })
   } catch (e) {
     list.innerHTML = `Error: ${e.message}`
@@ -160,14 +164,21 @@ function esc(s) {
   return d.innerHTML
 }
 
-function startProgress() {
-  loadProgress()
-  stopProgress()
-  progressTimer = setInterval(loadProgress, 2000)
+async function deleteSearch(id) {
+  if (!confirm(`Delete search "${id}"?`)) return
+  await fetch(`/api/search/${id}`, { method: "DELETE" })
+  loadSearches()
 }
 
-function stopProgress() {
-  if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
+async function renameSearch(id) {
+  const newId = prompt("New name:", id)
+  if (!newId || newId === id) return
+  await fetch(`/api/search/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_id: newId })
+  })
+  loadSearches()
 }
 
 async function loadProgress() {

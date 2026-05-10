@@ -517,6 +517,10 @@ class ScanRequest(BaseModel):
     search_id: str
 
 
+class RenameRequest(BaseModel):
+    new_id: str
+
+
 @app.on_event("startup")
 async def startup():
     if not TURSO_DB_URL:
@@ -662,6 +666,56 @@ async def get_results(search_id: str):
         "total": len(post_ids),
         "scanned_count": len(scanned),
     }
+
+
+@app.delete("/api/search/{search_id}")
+async def delete_search(search_id: str):
+    await turso_execute(
+        [
+            {
+                "sql": "DELETE FROM pi_searches WHERE id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            }
+        ]
+    )
+    return {"status": "deleted"}
+
+
+@app.patch("/api/search/{search_id}")
+async def rename_search(search_id: str, req: RenameRequest):
+    resp = await turso_execute(
+        [
+            {
+                "sql": "SELECT post_ids, created_at FROM pi_searches WHERE id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            }
+        ]
+    )
+    results = resp.get("results") or []
+    if not results or "response" not in results[0]:
+        return {"error": "not found"}
+    rows = results[0]["response"].get("result", {}).get("rows", [])
+    if not rows:
+        return {"error": "not found"}
+    post_ids_val = rows[0][0].get("value", "[]")
+    created_at = rows[0][1].get("value", "0")
+    await turso_execute(
+        [
+            {
+                "sql": "DELETE FROM pi_searches WHERE id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            },
+            {
+                "sql": "INSERT INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+                "args": [
+                    {"type": "text", "value": req.new_id},
+                    {"type": "text", "value": post_ids_val},
+                    {"type": "integer", "value": created_at},
+                ],
+            },
+        ]
+    )
+    return {"status": "renamed", "new_id": req.new_id}
 
 
 @app.get("/api/progress")
