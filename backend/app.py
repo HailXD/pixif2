@@ -3,7 +3,15 @@ import io
 import json
 import os
 import time
+from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
 
 import aiohttp
 import httpx
@@ -110,12 +118,15 @@ async def init_db():
 
 async def discord_notify(msg):
     if not DISCORD_WEBHOOK_URL:
+        print("WARN: DISCORD_WEBHOOK_URL not set, skipping notify")
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
-    except Exception:
-        pass
+            r = await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
+            if r.status_code >= 400:
+                print(f"Discord webhook failed ({r.status_code}): {r.text}")
+    except Exception as e:
+        print(f"Discord webhook error: {e}")
 
 
 def is_ai_post(post):
