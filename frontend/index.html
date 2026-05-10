@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixif2</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <nav>
+    <button class="tab active" data-tab="submit">Submit</button>
+    <button class="tab" data-tab="explorer">Explorer</button>
+  </nav>
+
+  <section id="submit" class="panel active">
+    <h2>Submit Search</h2>
+    <div class="form-group">
+      <label>URL / User IDs</label>
+      <input type="text" id="input-url" placeholder="https://www.pixiv.net/search?q=...  or  user IDs (comma-separated)">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Pages</label>
+        <input type="number" id="input-pages" value="30" min="1" max="500">
+      </div>
+      <div class="form-group">
+        <label>Mode</label>
+        <select id="input-mode">
+          <option value="all">All</option>
+          <option value="ai">AI Only</option>
+          <option value="real">Real Only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Action</label>
+        <select id="input-action">
+          <option value="search">Search</option>
+          <option value="scan_and_search">Search & Scan</option>
+        </select>
+      </div>
+    </div>
+    <button id="btn-submit" class="btn-primary">Submit</button>
+    <div id="submit-status"></div>
+  </section>
+
+  <section id="explorer" class="panel">
+    <h2>Explorer</h2>
+    <div id="search-list"></div>
+    <div id="search-detail" class="hidden">
+      <div class="detail-header">
+        <button id="btn-back" class="btn-secondary">&larr; Back</button>
+        <span id="detail-title"></span>
+        <span id="detail-stats"></span>
+        <button id="btn-scan" class="btn-primary">Scan</button>
+        <button id="btn-show" class="btn-secondary">Show Results</button>
+      </div>
+      <div id="results-grid"></div>
+    </div>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
