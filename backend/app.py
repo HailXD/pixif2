@@ -122,7 +122,7 @@ async def discord_notify(msg):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                DISCORD_WEBHOOK_URL.rstrip("/"),
+                DISCORD_WEBHOOK_URL.rstrip("/") + "/webhook-forward",
                 json={"content": msg},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as r:
