@@ -138,11 +138,18 @@ async function openSearch(id) {
   }
 }
 
+function pageSuffix(url) {
+  if (!url) return ""
+  const m = url.match(/_p(\d+)\./)
+  return m ? `_p${m[1]}` : ""
+}
+
 function renderResults(data) {
   const grid = $("#results-grid")
   grid.innerHTML = data.post_ids.map(pid => {
     const s = data.scanned[pid]
-    const link = `https://www.pixiv.net/artworks/${pid}`
+    const pg = s ? pageSuffix(s.url) : ""
+    const label = pid + pg
     let badge = ""
     if (!s) {
       badge = `<span class="not-scanned">not scanned</span>`
@@ -150,12 +157,18 @@ function renderResults(data) {
       const name = EXIF_NAMES[s.exif_type] || "?"
       badge = `<span class="exif-badge exif-${s.exif_type}">${name}</span>`
     } else {
-      badge = `<span class="no-exif">no exif</span>`
+      badge = `<span class="no-exif">NIL</span>`
     }
-    return `<div class="result-card">
-      <a href="${link}" target="_blank">${pid}</a><br>${badge}
+    return `<div class="result-card" data-pid="${pid}">
+      <span class="result-link">${label}</span><br>${badge}
     </div>`
   }).join("")
+  grid.querySelectorAll(".result-link").forEach(el => {
+    el.addEventListener("click", () => {
+      const pid = el.closest(".result-card").dataset.pid
+      window.open(`https://www.pixiv.net/artworks/${pid}`, "_blank")
+    })
+  })
 }
 
 function esc(s) {
