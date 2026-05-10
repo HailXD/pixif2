@@ -48,3 +48,13 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .exif-7 { background: #3a1a3a; color: #ce93d8; }
 .not-scanned { color: #555; }
 .no-exif { color: #666; }
+
+.progress-empty { color: #666; padding: 1rem 0; }
+.progress-item { background: #1a1a2e; border: 1px solid #333; border-radius: 6px; padding: .75rem 1rem; margin-bottom: .5rem; }
+.progress-info { display: flex; align-items: center; gap: 1rem; margin-bottom: .5rem; font-size: .85rem; }
+.progress-id { color: #6c63ff; font-family: monospace; }
+.progress-type { color: #aaa; }
+.progress-phase { color: #ffb74d; }
+.progress-label { margin-left: auto; color: #ccc; }
+.progress-bar-bg { background: #2a2a3e; border-radius: 3px; height: 6px; overflow: hidden; }
+.progress-bar-fill { background: #6c63ff; height: 100%; transition: width .3s ease; }

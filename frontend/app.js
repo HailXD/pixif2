@@ -3,6 +3,8 @@ const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const USER_ID_RE = /^\s*[\d\s,]+\s*$/
 
+let progressTimer = null
+
 $$(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
     $$(".tab").forEach(t => t.classList.remove("active"))
@@ -10,6 +12,8 @@ $$(".tab").forEach(tab => {
     tab.classList.add("active")
     $(`#${tab.dataset.tab}`).classList.add("active")
     if (tab.dataset.tab === "explorer") loadSearches()
+    if (tab.dataset.tab === "progress") startProgress()
+    else stopProgress()
   })
 })
 
@@ -154,4 +158,38 @@ function esc(s) {
   const d = document.createElement("div")
   d.textContent = s
   return d.innerHTML
+}
+
+function startProgress() {
+  loadProgress()
+  stopProgress()
+  progressTimer = setInterval(loadProgress, 2000)
+}
+
+function stopProgress() {
+  if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
+}
+
+async function loadProgress() {
+  const el = $("#progress-list")
+  try {
+    const resp = await fetch("/api/progress")
+    const tasks = await resp.json()
+    if (!tasks.length) { el.innerHTML = '<div class="progress-empty">No active tasks</div>'; return }
+    el.innerHTML = tasks.map(t => {
+      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
+      const label = t.total > 0 ? `${t.done} / ${t.total}` : "..."
+      return `<div class="progress-item">
+        <div class="progress-info">
+          <span class="progress-id">${t.id}</span>
+          <span class="progress-type">${t.type}</span>
+          <span class="progress-phase">${t.phase}</span>
+          <span class="progress-label">${label}</span>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
+      </div>`
+    }).join("")
+  } catch (e) {
+    el.innerHTML = `<div class="progress-empty">Error: ${e.message}</div>`
+  }
 }

@@ -60,6 +60,7 @@ EXIF_RANGE_LIMIT = 96
 FULL_IMAGE_LIMIT = 32
 
 app = FastAPI()
+ACTIVE_TASKS = {}
 
 FRONTEND_DIR = os.path.join(os.getcwd(), "frontend")
 
@@ -336,7 +337,7 @@ async def fetch_image(session, url, sem):
         return await r.read()
 
 
-async def run_scan(post_ids, phpsessid):
+async def run_scan(post_ids, phpsessid, task_id=None):
     post_sem = asyncio.Semaphore(POST_SCAN_LIMIT)
     exif_sem = asyncio.Semaphore(EXIF_RANGE_LIMIT)
     img_sem = asyncio.Semaphore(FULL_IMAGE_LIMIT)
@@ -349,6 +350,8 @@ async def run_scan(post_ids, phpsessid):
         for coro in asyncio.as_completed(tasks):
             result = await coro
             results.append(result)
+            if task_id and task_id in ACTIVE_TASKS:
+                ACTIVE_TASKS[task_id]["done"] = len(results)
     return results
 
 
@@ -397,6 +400,12 @@ async def get_scanned_post_ids(post_ids):
 
 
 async def bg_search_task(search_id, url, pages, mode, phpsessid):
+    ACTIVE_TASKS[search_id] = {
+        "type": "search",
+        "phase": "searching",
+        "total": 0,
+        "done": 0,
+    }
     await discord_notify(f"`{search_id}` started")
     try:
         post_ids, keywords = await pixiv_search(url, pages, mode, phpsessid)
@@ -413,9 +422,17 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
         await discord_notify(f"`{search_id}` completed - {len(post_ids)} posts found")
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
+    finally:
+        ACTIVE_TASKS.pop(search_id, None)
 
 
 async def bg_user_task(search_id, user_ids, phpsessid):
+    ACTIVE_TASKS[search_id] = {
+        "type": "user_search",
+        "phase": "searching",
+        "total": len(user_ids),
+        "done": 0,
+    }
     await discord_notify(f"`{search_id}` started (users)")
     try:
         results = await pixiv_user_posts(user_ids, phpsessid)
@@ -439,12 +456,20 @@ async def bg_user_task(search_id, user_ids, phpsessid):
         )
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
+    finally:
+        ACTIVE_TASKS.pop(search_id, None)
 
 
 async def bg_scan_task(search_id, post_ids, phpsessid):
+    ACTIVE_TASKS[search_id] = {
+        "type": "scan",
+        "phase": "scanning",
+        "total": len(post_ids),
+        "done": 0,
+    }
     await discord_notify(f"`{search_id}` scan started ({len(post_ids)} posts)")
     try:
-        results = await run_scan(post_ids, phpsessid)
+        results = await run_scan(post_ids, phpsessid, task_id=search_id)
         await save_scan_results(results)
         found = sum(1 for _, url, _ in results if url)
         await discord_notify(
@@ -452,9 +477,17 @@ async def bg_scan_task(search_id, post_ids, phpsessid):
         )
     except Exception as e:
         await discord_notify(f"`{search_id}` scan failed: {e}")
+    finally:
+        ACTIVE_TASKS.pop(search_id, None)
 
 
 async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
+    ACTIVE_TASKS[search_id] = {
+        "type": "search+scan",
+        "phase": "searching",
+        "total": 0,
+        "done": 0,
+    }
     await discord_notify(f"`{search_id}` search+scan started")
     try:
         post_ids, keywords = await pixiv_search(url, pages, mode, phpsessid)
@@ -474,7 +507,10 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
         already = await get_scanned_post_ids(post_ids)
         to_scan = [pid for pid in post_ids if pid not in already]
         if to_scan:
-            results = await run_scan(to_scan, phpsessid)
+            ACTIVE_TASKS[search_id].update(
+                {"phase": "scanning", "total": len(to_scan), "done": 0}
+            )
+            results = await run_scan(to_scan, phpsessid, task_id=search_id)
             await save_scan_results(results)
             found = sum(1 for _, url, _ in results if url)
             await discord_notify(
@@ -484,6 +520,8 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
             await discord_notify(f"`{search_id}` all {len(post_ids)} already scanned")
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
+    finally:
+        ACTIVE_TASKS.pop(search_id, None)
 
 
 class SearchRequest(BaseModel):
@@ -648,6 +686,11 @@ async def get_results(search_id: str):
         "total": len(post_ids),
         "scanned_count": len(scanned),
     }
+
+
+@app.get("/api/progress")
+async def get_progress():
+    return [{"id": k, **v} for k, v in ACTIVE_TASKS.items()]
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
