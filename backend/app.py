@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import io
 import json
 import os
@@ -18,26 +17,8 @@ TURSO_DB_URL = os.getenv("TURSO_DB_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN_WRITE", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 PHPSESSID = os.getenv("PHPSESSID", "")
-PASS = os.getenv("PASS", "").encode()
 
 IMG_BASE = "https://i.pximg.net/img-original/img/"
-
-
-def encrypt_query(text):
-    if not PASS:
-        return text
-    raw = bytes(b ^ PASS[i % len(PASS)] for i, b in enumerate(text.encode()))
-    return base64.b64encode(raw).decode()
-
-
-def decrypt_query(text):
-    if not PASS:
-        return text
-    try:
-        raw = base64.b64decode(text)
-        return bytes(b ^ PASS[i % len(PASS)] for i, b in enumerate(raw)).decode()
-    except Exception:
-        return text
 
 
 PIXIV_HEADERS = {
@@ -117,7 +98,7 @@ async def init_db():
     await turso_execute(
         [
             {
-                "sql": "CREATE TABLE IF NOT EXISTS searches (id TEXT PRIMARY KEY, query TEXT, post_ids TEXT, created_at INTEGER)"
+                "sql": "CREATE TABLE IF NOT EXISTS searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER)"
             },
             {
                 "sql": "CREATE TABLE IF NOT EXISTS scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
@@ -408,12 +389,11 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
     }
     await discord_notify(f"`{search_id}` started")
     try:
-        post_ids, keywords = await pixiv_search(url, pages, mode, phpsessid)
+        post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": encrypt_query(keywords)},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -440,12 +420,10 @@ async def bg_user_task(search_id, user_ids, phpsessid):
         for r in results:
             all_post_ids.extend(r["post_ids"])
         all_post_ids = list(dict.fromkeys(all_post_ids))
-        query_label = ",".join(str(u) for u in user_ids)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": encrypt_query(f"users:{query_label}")},
                 {"type": "text", "value": json.dumps(all_post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -490,12 +468,11 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
     }
     await discord_notify(f"`{search_id}` search+scan started")
     try:
-        post_ids, keywords = await pixiv_search(url, pages, mode, phpsessid)
+        post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO searches (id, post_ids, created_at) VALUES (?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": encrypt_query(keywords)},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -628,7 +605,7 @@ async def get_search(search_id: str):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, query, post_ids, created_at FROM searches WHERE id = ?",
+                "sql": "SELECT id, post_ids, created_at FROM searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -640,13 +617,12 @@ async def get_search(search_id: str):
     if not rows:
         return {"error": "not found"}
     row = rows[0]
-    post_ids = json.loads(row[2].get("value", "[]"))
+    post_ids = json.loads(row[1].get("value", "[]"))
     scanned = await get_scanned_post_ids(post_ids)
     return {
         "id": row[0].get("value"),
-        "query": decrypt_query(row[1].get("value", "")),
         "post_ids": post_ids,
-        "created_at": row[3].get("value"),
+        "created_at": row[2].get("value"),
         "scanned": scanned,
     }
 
