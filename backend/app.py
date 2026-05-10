@@ -13,9 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
-TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN_WRITE", "")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+TURSO_DB_URL = os.getenv("TURSO_DB_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN_WRITE", "").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 PHPSESSID = os.getenv("PHPSESSID", "")
 
 IMG_BASE = "https://i.pximg.net/img-original/img/"
@@ -479,7 +479,13 @@ class ScanRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    await init_db()
+    if not TURSO_DB_URL:
+        print("WARN: TURSO_DB_URL not set, skipping DB init")
+        return
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"WARN: DB init failed ({e}), will retry on first request")
 
 
 @app.post("/api/submit")
