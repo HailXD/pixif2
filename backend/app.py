@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import os
@@ -17,8 +18,28 @@ TURSO_DB_URL = os.getenv("TURSO_DB_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN_WRITE", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 PHPSESSID = os.getenv("PHPSESSID", "")
+PASS = os.getenv("PASS", "").encode()
 
 IMG_BASE = "https://i.pximg.net/img-original/img/"
+
+
+def encrypt_query(text):
+    if not PASS:
+        return text
+    raw = bytes(b ^ PASS[i % len(PASS)] for i, b in enumerate(text.encode()))
+    return base64.b64encode(raw).decode()
+
+
+def decrypt_query(text):
+    if not PASS:
+        return text
+    try:
+        raw = base64.b64decode(text)
+        return bytes(b ^ PASS[i % len(PASS)] for i, b in enumerate(raw)).decode()
+    except Exception:
+        return text
+
+
 PIXIV_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
     "referer": "https://www.pixiv.net/",
@@ -100,6 +121,7 @@ async def init_db():
             {
                 "sql": "CREATE TABLE IF NOT EXISTS scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
+            {"sql": "DELETE FROM searches"},
         ]
     )
 
@@ -382,7 +404,7 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
             "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": keywords},
+                {"type": "text", "value": encrypt_query(keywords)},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -406,7 +428,7 @@ async def bg_user_task(search_id, user_ids, phpsessid):
             "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": f"users:{query_label}"},
+                {"type": "text", "value": encrypt_query(f"users:{query_label}")},
                 {"type": "text", "value": json.dumps(all_post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -440,7 +462,7 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
             "sql": "INSERT OR REPLACE INTO searches (id, query, post_ids, created_at) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
-                {"type": "text", "value": keywords},
+                {"type": "text", "value": encrypt_query(keywords)},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
             ],
@@ -544,7 +566,7 @@ async def list_searches():
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, query, created_at FROM searches ORDER BY created_at DESC LIMIT 100"
+                "sql": "SELECT id, created_at FROM searches ORDER BY created_at DESC LIMIT 100"
             }
         ]
     )
@@ -557,8 +579,7 @@ async def list_searches():
         out.append(
             {
                 "id": row[0].get("value"),
-                "query": row[1].get("value"),
-                "created_at": row[2].get("value"),
+                "created_at": row[1].get("value"),
             }
         )
     return out
@@ -585,7 +606,7 @@ async def get_search(search_id: str):
     scanned = await get_scanned_post_ids(post_ids)
     return {
         "id": row[0].get("value"),
-        "query": row[1].get("value"),
+        "query": decrypt_query(row[1].get("value", "")),
         "post_ids": post_ids,
         "created_at": row[3].get("value"),
         "scanned": scanned,

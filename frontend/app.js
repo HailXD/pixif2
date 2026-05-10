@@ -62,7 +62,6 @@ async function loadSearches() {
       const ts = d.toLocaleString()
       return `<div class="search-item" data-id="${s.id}">
         <span class="id">${s.id}</span>
-        <span class="query">${esc(s.query)}</span>
         <span class="time">${ts}</span>
       </div>`
     }).join("")
