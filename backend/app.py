@@ -107,8 +107,11 @@ async def init_db():
 async def discord_notify(msg):
     if not DISCORD_WEBHOOK_URL:
         return
-    async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
+    except Exception:
+        pass
 
 
 def is_ai_post(post):
