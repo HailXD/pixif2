@@ -111,7 +111,6 @@ async def init_db():
             {
                 "sql": "CREATE TABLE IF NOT EXISTS pi_scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
-            {"sql": "DELETE FROM pi_searches"},
         ]
     )
 
@@ -121,10 +120,15 @@ async def discord_notify(msg):
         print("WARN: DISCORD_WEBHOOK_URL not set, skipping notify")
         return
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
-            if r.status_code >= 400:
-                print(f"Discord webhook failed ({r.status_code}): {r.text}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                DISCORD_WEBHOOK_URL.rstrip("/"),
+                json={"content": msg},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                if r.status >= 400:
+                    body = await r.text()
+                    print(f"Discord webhook failed ({r.status}): {body}")
     except Exception as e:
         print(f"Discord webhook error: {repr(e)}")
 
