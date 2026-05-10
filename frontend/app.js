@@ -1,7 +1,7 @@
 const $ = s => document.querySelector(s)
 const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
-const USER_ID_RE = /^\s*[\d\s,]+\s*$/
+const LONG_DIGITS_RE = /\d{6,}/g
 
 
 $$(".tab").forEach(tab => {
@@ -25,14 +25,23 @@ $("#btn-submit").addEventListener("click", async () => {
   status.textContent = "Submitting..."
   status.className = ""
 
+  const userIds = [...new Set(url.match(LONG_DIGITS_RE) || [])]
+  const hasSearch = /search/i.test(url)
+  const isUserInput = userIds.length > 0 && !hasSearch
+
+  if (userIds.length > 0 && hasSearch) {
+    status.textContent = "Ambiguous input - pick either user IDs or a search URL"
+    status.className = "status-err"
+    return
+  }
+
   try {
     let resp
-    if (USER_ID_RE.test(url)) {
-      const ids = url.split(/[\s,]+/).filter(Boolean)
+    if (isUserInput) {
       resp = await fetch("/api/submit_users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_ids: ids, action })
+        body: JSON.stringify({ user_ids: userIds, action })
       })
     } else {
       resp = await fetch("/api/submit", {
