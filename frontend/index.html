@@ -8,20 +8,26 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="app">
+<header class="topbar">
+  <div class="brand">Pixif2</div>
   <nav>
     <button class="tab active" data-tab="submit">Submit</button>
     <button class="tab" data-tab="progress">Progress</button>
     <button class="tab" data-tab="explorer">Explorer</button>
   </nav>
+</header>
 
+<main id="app">
   <section id="submit" class="panel active">
-    <h2>Submit Search</h2>
-    <div class="form-group">
-      <label>URL / User IDs</label>
-      <input type="text" id="input-url" placeholder="https://www.pixiv.net/search?q=...  or  user IDs (comma-separated)">
+    <div class="section-head">
+      <h1>Submit</h1>
+      <span>Search and scan</span>
     </div>
-    <div class="form-row">
+    <div class="submit-grid">
+      <div class="form-group">
+        <label>URL or user IDs</label>
+        <input type="text" id="input-url" placeholder="https://www.pixiv.net/search?q=...">
+      </div>
       <div class="form-group">
         <label>Pages</label>
         <input type="number" id="input-pages" value="30" min="1" max="500">
@@ -30,35 +36,43 @@
         <label>Mode</label>
         <select id="input-mode">
           <option value="all">All</option>
-          <option value="ai" selected>AI Only</option>
-          <option value="real">Real Only</option>
+          <option value="ai" selected>AI only</option>
+          <option value="real">Real only</option>
         </select>
       </div>
+      <button id="btn-submit" class="btn-primary">Submit</button>
     </div>
-    <button id="btn-submit" class="btn-primary">Submit</button>
     <div id="submit-status"></div>
   </section>
 
   <section id="progress" class="panel">
-    <h2>Progress</h2>
+    <div class="section-head">
+      <h1>Progress</h1>
+      <span>Active tasks</span>
+    </div>
     <div id="progress-list"></div>
   </section>
 
   <section id="explorer" class="panel">
-    <h2>Explorer</h2>
+    <div class="section-head">
+      <h1>Explorer</h1>
+      <span>Saved scans</span>
+    </div>
     <div id="search-list"></div>
     <div id="search-detail" class="hidden">
       <div class="detail-header">
-        <button id="btn-back" class="btn-secondary">&larr; Back</button>
-        <span id="detail-title"></span>
-        <span id="detail-stats"></span>
-        <label class="check-row"><input type="checkbox" id="filter-exif" checked> Exif Only</label>
+        <button id="btn-back" class="btn-secondary">Back</button>
+        <div>
+          <div id="detail-title"></div>
+          <div id="detail-stats"></div>
+        </div>
+        <label class="check-row"><input type="checkbox" id="filter-exif" checked> Exif only</label>
       </div>
       <div id="pager"></div>
       <div id="results-grid"></div>
     </div>
   </section>
-</div>
+</main>
 <div id="viewer" class="hidden" aria-hidden="true">
   <div class="viewer-bar">
     <button id="viewer-zoom-out" class="btn-secondary">-</button>
