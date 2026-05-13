@@ -170,7 +170,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
   display: grid;
   gap: .5rem;
 }
-.search-item, .progress-item {
+.search-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -182,8 +182,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
   border-radius: 6px;
   transition: border-color .15s, transform .15s, background .15s;
 }
-.search-item:hover, .progress-item:hover { border-color: var(--accent); background: var(--panel-2); transform: translateY(-1px); }
-.search-item .id, .progress-id {
+.search-item:hover { border-color: var(--accent); background: var(--panel-2); transform: translateY(-1px); }
+.search-item .id {
   color: var(--accent);
   font-family: Consolas, "SFMono-Regular", monospace;
   font-size: .88rem;
@@ -339,33 +339,6 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
 .exif-5, .exif-6 { background: #232323; color: #aaa; }
 .exif-7 { background: #2a172a; color: #d9a; }
 .not-scanned, .no-exif { color: var(--dim); background: #181818; }
-.progress-empty {
-  color: var(--muted);
-  padding: 1rem 0;
-}
-.progress-info {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: .75rem;
-  font-size: .86rem;
-}
-.progress-type { color: var(--text); }
-.progress-phase { color: var(--warn); }
-.progress-label { color: var(--muted); }
-.progress-bar-bg {
-  grid-column: 1 / -1;
-  height: 7px;
-  margin-top: .5rem;
-  background: #25282b;
-  border-radius: 999px;
-  overflow: hidden;
-}
-.progress-bar-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width .25s ease;
-}
 #viewer {
   position: fixed;
   inset: 0;
@@ -425,5 +398,4 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
   .search-actions, .mini-bar { grid-column: 1 / -1; }
   .detail-header { grid-template-columns: 1fr; }
   #results-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); max-height: none; }
-  .progress-info { grid-template-columns: 1fr; }
 }

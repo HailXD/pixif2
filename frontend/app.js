@@ -63,9 +63,12 @@ function route() {
   const parts = path.split("/").filter(Boolean)
   const tab = parts[0] || "submit"
   const params = new URLSearchParams(qs)
+  if (tab === "progress") {
+    location.hash = "#/explorer"
+    return
+  }
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab))
   $$(".panel").forEach(p => p.classList.toggle("active", p.id === tab))
-  if (tab === "progress") loadProgress()
   if (tab === "explorer") {
     if (parts[1]) {
       openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
@@ -333,30 +336,6 @@ async function renameSearch(id) {
   })
   location.hash = "#/explorer"
   loadSearches()
-}
-
-async function loadProgress() {
-  const el = $("#progress-list")
-  try {
-    const resp = await fetch("/api/progress")
-    const tasks = await resp.json()
-    if (!tasks.length) { el.innerHTML = '<div class="progress-empty">No active tasks</div>'; return }
-    el.innerHTML = tasks.map(t => {
-      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
-      const label = t.total > 0 ? `${t.done} / ${t.total}` : "..."
-      return `<div class="progress-item">
-        <div class="progress-info">
-          <span class="progress-id">${t.id}</span>
-          <span class="progress-type">${t.type}</span>
-          <span class="progress-phase">${t.phase}</span>
-          <span class="progress-label">${label}</span>
-        </div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-      </div>`
-    }).join("")
-  } catch (e) {
-    el.innerHTML = `<div class="progress-empty">Error: ${e.message}</div>`
-  }
 }
 
 window.addEventListener("hashchange", route)

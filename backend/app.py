@@ -697,7 +697,7 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
 class SearchRequest(BaseModel):
     url: str
     pages: int = 30
-    mode: str = "all"
+    mode: str = "ai"
     action: str = "search"
 
 
