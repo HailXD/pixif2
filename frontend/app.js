@@ -97,12 +97,11 @@ async function loadSearches(page = 1) {
     const searches = data.items || []
     if (!searches.length && !active.length) { list.innerHTML = "No searches yet"; return }
     const activeHtml = active.map(t => {
-      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
       const label = t.total > 0 ? `${t.done}/${t.total}` : "..."
       return `<div class="search-item active-task" data-id="${esc(t.id)}">
         <span class="id">${esc(t.id)}</span>
         <span class="time">${esc(t.type)} ${esc(t.phase)} ${label}</span>
-        <div class="mini-bar"><div style="width:${pct}%"></div></div>
+        <span class="search-status active-mark">...</span>
       </div>`
     }).join("")
     const savedHtml = searches.map(s => {
@@ -112,6 +111,7 @@ async function loadSearches(page = 1) {
         <span class="id">${esc(s.id)}</span>
         <span class="time">${ts}</span>
         <span class="search-actions">
+          <span class="search-status done-mark">✓</span>
           <button class="btn-icon btn-rename" title="Rename">&#9998;</button>
           <button class="btn-icon btn-delete" title="Delete">&times;</button>
         </span>
