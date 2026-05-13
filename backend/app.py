@@ -72,6 +72,15 @@ def base26_time():
     return x
 
 
+def base26_to_time(value):
+    n = 0
+    for c in value:
+        if c < "a" or c > "z":
+            return 0
+        n = n * 26 + ord(c) - 97
+    return n // 100
+
+
 def turso_url():
     base = TURSO_DB_URL.rstrip("/")
     if not base.startswith("http"):
@@ -115,16 +124,13 @@ async def init_db():
     await turso_execute(
         [
             {
-                "sql": "CREATE TABLE IF NOT EXISTS pi_searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER, api_url TEXT)"
+                "sql": "CREATE TABLE IF NOT EXISTS pi_searches (id TEXT PRIMARY KEY, post_ids TEXT)"
             },
             {
                 "sql": "CREATE TABLE IF NOT EXISTS pi_scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
             {
                 "sql": "CREATE TABLE IF NOT EXISTS pi_search_posts (search_id TEXT NOT NULL, post_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (search_id, post_id))"
-            },
-            {
-                "sql": "CREATE INDEX IF NOT EXISTS pi_searches_created_at_idx ON pi_searches (created_at DESC)"
             },
             {
                 "sql": "CREATE INDEX IF NOT EXISTS pi_search_posts_search_pos_idx ON pi_search_posts (search_id, pos)"
@@ -134,14 +140,17 @@ async def init_db():
             },
         ]
     )
-    try:
-        await turso_execute(
-            [{"sql": "ALTER TABLE pi_searches ADD COLUMN api_url TEXT"}]
-        )
-    except httpx.HTTPStatusError as e:
-        text = e.response.text.casefold()
-        if "duplicate column" not in text and "already exists" not in text:
-            raise
+    for sql in (
+        "DROP INDEX IF EXISTS pi_searches_created_at_idx",
+        "ALTER TABLE pi_searches DROP COLUMN api_url",
+        "ALTER TABLE pi_searches DROP COLUMN created_at",
+    ):
+        try:
+            await turso_execute([{"sql": sql}])
+        except httpx.HTTPStatusError as e:
+            text = e.response.text.casefold()
+            if "no such column" not in text and "no such index" not in text:
+                raise
 
 
 async def discord_notify(msg):
@@ -248,15 +257,12 @@ def get_search_api_url(raw, keywords):
     return f"https://www.pixiv.net/ajax/search/artworks/{encoded}?{params}"
 
 
-async def save_search(search_id, post_ids, api_url):
+async def save_search(search_id, post_ids):
     stmt = {
-        "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, COALESCE((SELECT created_at FROM pi_searches WHERE id = ?), ?), ?)",
+        "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids) VALUES (?, ?)",
         "args": [
             {"type": "text", "value": search_id},
             {"type": "text", "value": json.dumps(post_ids)},
-            {"type": "text", "value": search_id},
-            {"type": "integer", "value": str(int(time.time()))},
-            {"type": "text", "value": api_url},
         ],
     }
     await turso_execute([stmt])
@@ -308,7 +314,7 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
     keywords = get_search_keywords(url)
     api_url = get_search_api_url(url, keywords)
     first_url = f"{api_url}&p=1"
-    await save_search(search_id, [], first_url)
+    await save_search(search_id, [])
     cookies = {"PHPSESSID": phpsessid}
     post_ids = []
     seen = set()
@@ -333,8 +339,8 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
                     seen.add(pid)
                     post_ids.append(pid)
             if done == 1 or done % 5 == 0:
-                await save_search(search_id, post_ids, first_url)
-    await save_search(search_id, post_ids, first_url)
+                await save_search(search_id, post_ids)
+    await save_search(search_id, post_ids)
     return post_ids, keywords, first_url
 
 
@@ -694,7 +700,7 @@ async def bg_user_task(search_id, user_ids, phpsessid):
         for r in results:
             all_post_ids.extend(r["post_ids"])
         all_post_ids = list(dict.fromkeys(all_post_ids))
-        await save_search(search_id, all_post_ids, "")
+        await save_search(search_id, all_post_ids)
         await discord_notify(
             f"`{search_id}` completed - {len(all_post_ids)} posts from {len(user_ids)} users"
         )
@@ -825,7 +831,7 @@ async def list_searches():
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, created_at FROM pi_searches ORDER BY created_at DESC LIMIT 100"
+                "sql": "SELECT id FROM pi_searches ORDER BY length(id) DESC, id DESC LIMIT 100"
             }
         ]
     )
@@ -835,10 +841,11 @@ async def list_searches():
     rows = results[0]["response"].get("result", {}).get("rows", [])
     out = []
     for row in rows:
+        search_id = row[0].get("value")
         out.append(
             {
-                "id": row[0].get("value"),
-                "created_at": row[1].get("value"),
+                "id": search_id,
+                "created_at": base26_to_time(search_id),
             }
         )
     return out
@@ -849,7 +856,7 @@ async def get_search(search_id: str):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, post_ids, created_at, api_url FROM pi_searches WHERE id = ?",
+                "sql": "SELECT id, post_ids FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -866,8 +873,7 @@ async def get_search(search_id: str):
     return {
         "id": row[0].get("value"),
         "post_ids": post_ids,
-        "created_at": row[2].get("value"),
-        "api_url": row[3].get("value") if len(row) > 3 and row[3].get("value") else "",
+        "created_at": base26_to_time(row[0].get("value")),
         "scanned": scanned,
     }
 
@@ -1035,7 +1041,7 @@ async def rename_search(search_id: str, req: RenameRequest):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids, created_at, api_url FROM pi_searches WHERE id = ?",
+                "sql": "SELECT post_ids FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -1047,10 +1053,6 @@ async def rename_search(search_id: str, req: RenameRequest):
     if not rows:
         return {"error": "not found"}
     post_ids_val = rows[0][0].get("value", "[]")
-    created_at = rows[0][1].get("value", "0")
-    api_url = (
-        rows[0][2].get("value") if len(rows[0]) > 2 and rows[0][2].get("value") else ""
-    )
     post_ids = json.loads(post_ids_val)
     await ensure_search_posts(search_id, post_ids)
     await turso_execute(
@@ -1064,12 +1066,10 @@ async def rename_search(search_id: str, req: RenameRequest):
                 "args": [{"type": "text", "value": search_id}],
             },
             {
-                "sql": "INSERT INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
+                "sql": "INSERT INTO pi_searches (id, post_ids) VALUES (?, ?)",
                 "args": [
                     {"type": "text", "value": req.new_id},
                     {"type": "text", "value": post_ids_val},
-                    {"type": "integer", "value": created_at},
-                    {"type": "text", "value": api_url},
                 ],
             },
             {
