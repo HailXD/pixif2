@@ -2,16 +2,12 @@ const $ = s => document.querySelector(s)
 const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const LONG_DIGITS_RE = /\d{6,}/g
+const PAGE_SIZE = 60
 
 
 $$(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
-    $$(".tab").forEach(t => t.classList.remove("active"))
-    $$(".panel").forEach(p => p.classList.remove("active"))
-    tab.classList.add("active")
-    $(`#${tab.dataset.tab}`).classList.add("active")
-    if (tab.dataset.tab === "explorer") loadSearches()
-    if (tab.dataset.tab === "progress") loadProgress()
+    location.hash = `#/${tab.dataset.tab}`
   })
 })
 
@@ -51,7 +47,9 @@ $("#btn-submit").addEventListener("click", async () => {
       })
     }
     const data = await resp.json()
-    status.textContent = `Submitted as ${data.id} - you can close this page`
+    status.innerHTML = data.api_url
+      ? `Submitted as ${esc(data.id)}<br><span>API URL</span> <a href="${esc(data.api_url)}" target="_blank">${esc(data.api_url)}</a>`
+      : `Submitted as ${esc(data.id)} - you can close this page`
     status.className = "status-ok"
   } catch (e) {
     status.textContent = `Error: ${e.message}`
@@ -59,20 +57,55 @@ $("#btn-submit").addEventListener("click", async () => {
   }
 })
 
+function route() {
+  const raw = location.hash.slice(2) || "submit"
+  const [path, qs = ""] = raw.split("?")
+  const parts = path.split("/").filter(Boolean)
+  const tab = parts[0] || "submit"
+  const params = new URLSearchParams(qs)
+  $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab))
+  $$(".panel").forEach(p => p.classList.toggle("active", p.id === tab))
+  if (tab === "progress") loadProgress()
+  if (tab === "explorer") {
+    if (parts[1]) {
+      openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
+    } else {
+      loadSearches()
+    }
+  }
+}
+
+
+function explorerHash(id, page, exifOnly) {
+  return `#/explorer/${encodeURIComponent(id)}?page=${page}&exif=${exifOnly ? 1 : 0}`
+}
+
+
 async function loadSearches() {
   const list = $("#search-list")
   const detail = $("#search-detail")
   detail.classList.add("hidden")
   list.innerHTML = "Loading..."
   try {
-    const resp = await fetch("/api/searches")
-    const data = await resp.json()
-    if (!data.length) { list.innerHTML = "No searches yet"; return }
-    list.innerHTML = data.map(s => {
+    const [searchResp, taskResp] = await Promise.all([fetch("/api/searches"), fetch("/api/progress")])
+    const data = await searchResp.json()
+    const tasks = await taskResp.json()
+    const active = tasks.filter(t => t.type === "search" || t.type === "search+scan" || t.type === "user_search")
+    if (!data.length && !active.length) { list.innerHTML = "No searches yet"; return }
+    const activeHtml = active.map(t => {
+      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
+      const label = t.total > 0 ? `${t.done}/${t.total}` : "..."
+      return `<div class="search-item active-task">
+        <span class="id">${esc(t.id)}</span>
+        <span class="time">${esc(t.type)} ${esc(t.phase)} ${label}</span>
+        <div class="mini-bar"><div style="width:${pct}%"></div></div>
+      </div>`
+    }).join("")
+    const savedHtml = data.map(s => {
       const d = new Date(parseInt(s.created_at) * 1000)
       const ts = d.toLocaleString()
-      return `<div class="search-item" data-id="${s.id}">
-        <span class="id">${s.id}</span>
+      return `<div class="search-item" data-id="${esc(s.id)}">
+        <span class="id">${esc(s.id)}</span>
         <span class="time">${ts}</span>
         <span class="search-actions">
           <button class="btn-icon btn-rename" title="Rename">&#9998;</button>
@@ -80,8 +113,10 @@ async function loadSearches() {
         </span>
       </div>`
     }).join("")
+    list.innerHTML = activeHtml + savedHtml
     list.querySelectorAll(".search-item").forEach(el => {
-      el.querySelector(".id").addEventListener("click", () => openSearch(el.dataset.id))
+      if (!el.dataset.id) return
+      el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1, true) })
       el.querySelector(".btn-rename").addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
       el.querySelector(".btn-delete").addEventListener("click", e => { e.stopPropagation(); deleteSearch(el.dataset.id) })
     })
@@ -90,42 +125,33 @@ async function loadSearches() {
   }
 }
 
-async function openSearch(id) {
+async function openSearch(id, page = 1, exifOnly = true) {
   const list = $("#search-list")
   const detail = $("#search-detail")
   list.innerHTML = ""
   detail.classList.remove("hidden")
   $("#detail-title").textContent = id
   $("#detail-stats").textContent = "Loading..."
+  $("#detail-api-url").innerHTML = ""
+  $("#pager").innerHTML = ""
   $("#results-grid").innerHTML = ""
+  $("#filter-exif").checked = exifOnly
 
   try {
-    const resp = await fetch(`/api/search/${id}`)
+    const resp = await fetch(`/api/results/${encodeURIComponent(id)}?page=${page}&exif_only=${exifOnly ? 1 : 0}`)
     const data = await resp.json()
     if (data.error) { $("#detail-stats").textContent = data.error; return }
 
-    const total = data.post_ids.length
-    const scannedCount = Object.keys(data.scanned).length
-    const allScanned = scannedCount >= total
-    const typeCounts = {}
-    for (const s of Object.values(data.scanned)) {
-      if (s.exif_type) {
-        const name = EXIF_NAMES[s.exif_type] || "?"
-        typeCounts[name] = (typeCounts[name] || 0) + 1
-      }
-    }
-    const typeParts = Object.entries(typeCounts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, n]) => `${n} ${name}`)
-    const statParts = [`${scannedCount}/${total} scanned`, ...typeParts]
-    $("#detail-stats").textContent = statParts.join(" | ")
+    const allScanned = data.scanned_count >= data.raw_total
+    $("#detail-stats").textContent = `${data.total}/${data.raw_total} shown | ${data.scanned_count}/${data.raw_total} scanned`
+    $("#detail-api-url").innerHTML = data.api_url ? `<span>API URL</span> <a href="${esc(data.api_url)}" target="_blank">${esc(data.api_url)}</a>` : ""
 
     const scanBtn = $("#btn-scan")
     if (allScanned) {
       scanBtn.textContent = "Scanned"
       scanBtn.disabled = true
     } else {
-      scanBtn.textContent = `Scan (${total - scannedCount} remaining)`
+      scanBtn.textContent = `Scan (${data.raw_total - data.scanned_count} remaining)`
       scanBtn.disabled = false
       scanBtn.onclick = async () => {
         scanBtn.disabled = true
@@ -137,11 +163,14 @@ async function openSearch(id) {
         })
         const d = await r.json()
         scanBtn.textContent = d.status === "already_scanned" ? "Scanned" : `Scanning ${d.to_scan}...`
+        if (d.status !== "already_scanned") location.hash = "#/progress"
       }
     }
 
-    $("#btn-show").onclick = () => renderResults(data)
-    $("#btn-back").onclick = () => { detail.classList.add("hidden"); loadSearches() }
+    $("#filter-exif").onchange = () => { location.hash = explorerHash(id, 1, $("#filter-exif").checked) }
+    $("#btn-back").onclick = () => { location.hash = "#/explorer" }
+    renderPager(id, data, exifOnly)
+    renderResults(data)
   } catch (e) {
     $("#detail-stats").textContent = e.message
   }
@@ -155,20 +184,22 @@ function pageSuffix(url) {
 
 function renderResults(data) {
   const grid = $("#results-grid")
-  grid.innerHTML = data.post_ids.map(pid => {
-    const s = data.scanned[pid]
-    const pg = s ? pageSuffix(s.url) : ""
+  grid.innerHTML = data.items.map(item => {
+    const pid = item.post_id
+    const pg = item.url ? pageSuffix(item.url) : ""
     const label = pid + pg
     let badge = ""
-    if (!s) {
+    if (!item.scanned) {
       badge = `<span class="not-scanned">not scanned</span>`
-    } else if (s.exif_type) {
-      const name = EXIF_NAMES[s.exif_type] || "?"
-      badge = `<span class="exif-badge exif-${s.exif_type}">${name}</span>`
+    } else if (item.exif_type) {
+      const name = EXIF_NAMES[item.exif_type] || "?"
+      badge = `<span class="exif-badge exif-${item.exif_type}">${name}</span>`
     } else {
       badge = `<span class="no-exif">NIL</span>`
     }
+    const thumb = item.exif_type ? `<div class="thumb" data-pid="${pid}"></div>` : ""
     return `<div class="result-card" data-pid="${pid}">
+      ${thumb}
       <span class="result-link">${label}</span><br>${badge}
     </div>`
   }).join("")
@@ -178,6 +209,26 @@ function renderResults(data) {
       window.open(`https://www.pixiv.net/artworks/${pid}`, "_blank")
     })
   })
+  grid.querySelectorAll(".thumb").forEach(el => {
+    const pid = el.dataset.pid
+    const img = new Image()
+    img.onload = () => { el.classList.add("thumb-loaded"); el.replaceChildren(img) }
+    img.onerror = () => el.classList.add("thumb-error")
+    img.src = `/api/thumb/${encodeURIComponent(pid)}`
+  })
+}
+
+function renderPager(id, data, exifOnly) {
+  const pager = $("#pager")
+  const prev = Math.max(data.page - 1, 1)
+  const next = Math.min(data.page + 1, data.pages)
+  const start = data.total ? (data.page - 1) * PAGE_SIZE + 1 : 0
+  const end = Math.min(data.page * PAGE_SIZE, data.total)
+  pager.innerHTML = `<button class="btn-secondary" id="page-prev" ${data.page <= 1 ? "disabled" : ""}>Prev</button>
+    <span>${start}-${end} of ${data.total} | page ${data.page}/${data.pages}</span>
+    <button class="btn-secondary" id="page-next" ${data.page >= data.pages ? "disabled" : ""}>Next</button>`
+  $("#page-prev").onclick = () => { location.hash = explorerHash(id, prev, exifOnly) }
+  $("#page-next").onclick = () => { location.hash = explorerHash(id, next, exifOnly) }
 }
 
 function esc(s) {
@@ -189,6 +240,7 @@ function esc(s) {
 async function deleteSearch(id) {
   if (!confirm(`Delete search "${id}"?`)) return
   await fetch(`/api/search/${id}`, { method: "DELETE" })
+  location.hash = "#/explorer"
   loadSearches()
 }
 
@@ -200,6 +252,7 @@ async function renameSearch(id) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ new_id: newId })
   })
+  location.hash = "#/explorer"
   loadSearches()
 }
 
@@ -226,3 +279,7 @@ async function loadProgress() {
     el.innerHTML = `<div class="progress-empty">Error: ${e.message}</div>`
   }
 }
+
+window.addEventListener("hashchange", route)
+if (!location.hash) location.hash = "#/submit"
+route()

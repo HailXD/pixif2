@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit
@@ -16,7 +17,8 @@ except ImportError:
 import aiohttp
 import httpx
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -47,6 +49,9 @@ EXIF_TYPE_TO_CODE = {name: idx + 1 for idx, name in enumerate(EXIF_TYPE_ORDER)}
 POST_SCAN_LIMIT = 64
 EXIF_RANGE_LIMIT = 96
 FULL_IMAGE_LIMIT = 32
+PAGE_SIZE = 60
+THUMB_MAX_AGE = 1800
+THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
 
 app = FastAPI()
 ACTIVE_TASKS = {}
@@ -106,13 +111,21 @@ async def init_db():
     await turso_execute(
         [
             {
-                "sql": "CREATE TABLE IF NOT EXISTS pi_searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER)"
+                "sql": "CREATE TABLE IF NOT EXISTS pi_searches (id TEXT PRIMARY KEY, post_ids TEXT, created_at INTEGER, api_url TEXT)"
             },
             {
                 "sql": "CREATE TABLE IF NOT EXISTS pi_scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
         ]
     )
+    try:
+        await turso_execute(
+            [{"sql": "ALTER TABLE pi_searches ADD COLUMN api_url TEXT"}]
+        )
+    except httpx.HTTPStatusError as e:
+        text = e.response.text.casefold()
+        if "duplicate column" not in text and "already exists" not in text:
+            raise
 
 
 async def discord_notify(msg):
@@ -167,7 +180,7 @@ def get_search_keywords(raw):
 def get_search_params(raw, keywords):
     params = []
     for key, value in parse_qsl(urlsplit(raw).query, keep_blank_values=True):
-        if key in ("q", "word", "type"):
+        if key in ("p", "q", "word", "type"):
             continue
         if key == "s_mode":
             if value == "tag":
@@ -181,11 +194,15 @@ def get_search_params(raw, keywords):
     return urlencode(params)
 
 
+def get_search_api_url(raw, keywords):
+    encoded = quote(keywords, safe="")
+    params = get_search_params(raw, keywords)
+    return f"https://www.pixiv.net/ajax/search/artworks/{encoded}?{params}"
+
+
 async def pixiv_search(url, pages, mode, phpsessid):
     keywords = get_search_keywords(url)
-    encoded = quote(keywords, safe="")
-    params = get_search_params(url, keywords)
-    api_url = f"https://www.pixiv.net/ajax/search/artworks/{encoded}?{params}"
+    api_url = get_search_api_url(url, keywords)
     cookies = {"PHPSESSID": phpsessid}
     post_ids = []
     async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
@@ -203,7 +220,7 @@ async def pixiv_search(url, pages, mode, phpsessid):
         elif mode == "real":
             posts = [p for p in posts if not is_ai_post(p)]
         post_ids.extend([str(p["id"]) for p in posts if p.get("id")])
-    return list(dict.fromkeys(post_ids)), keywords
+    return list(dict.fromkeys(post_ids)), keywords, f"{api_url}&p=1"
 
 
 async def pixiv_user_posts(user_ids, phpsessid):
@@ -395,6 +412,54 @@ async def get_scanned_post_ids(post_ids):
     return scanned
 
 
+def exif_items(post_ids, scanned):
+    items = []
+    for pid in post_ids:
+        s = scanned.get(pid)
+        if not s or not s.get("exif_type"):
+            continue
+        items.append(
+            {
+                "post_id": pid,
+                "url": s.get("url"),
+                "exif_type": s.get("exif_type"),
+                "scanned": True,
+            }
+        )
+    return items
+
+
+def cleanup_thumbs():
+    THUMB_DIR.mkdir(exist_ok=True)
+    now = time.time()
+    for path in THUMB_DIR.glob("*.webp"):
+        try:
+            if now - path.stat().st_atime > THUMB_MAX_AGE:
+                path.unlink()
+        except OSError:
+            pass
+
+
+async def create_thumb(post_id, short_url, phpsessid):
+    cleanup_thumbs()
+    out = THUMB_DIR / f"{post_id}.webp"
+    if out.exists():
+        os.utime(out, None)
+        return out
+    url = short_url if short_url.startswith("http") else IMG_BASE + short_url
+    cookies = {"PHPSESSID": phpsessid}
+    async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
+        data = await fetch_image(session, url, asyncio.Semaphore(1))
+    if not data:
+        raise HTTPException(status_code=404, detail="image not found")
+    image = Image.open(io.BytesIO(data))
+    image.thumbnail((144, 144))
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGB")
+    image.save(out, "WEBP", quality=70)
+    return out
+
+
 async def bg_search_task(search_id, url, pages, mode, phpsessid):
     ACTIVE_TASKS[search_id] = {
         "type": "search",
@@ -404,13 +469,14 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
     }
     await discord_notify(f"`{search_id}` started")
     try:
-        post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
+        post_ids, _, api_url = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
+                {"type": "text", "value": api_url},
             ],
         }
         await turso_execute([stmt])
@@ -436,11 +502,12 @@ async def bg_user_task(search_id, user_ids, phpsessid):
             all_post_ids.extend(r["post_ids"])
         all_post_ids = list(dict.fromkeys(all_post_ids))
         stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(all_post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
+                {"type": "text", "value": ""},
             ],
         }
         await turso_execute([stmt])
@@ -483,13 +550,14 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
     }
     await discord_notify(f"`{search_id}` search+scan started")
     try:
-        post_ids, _ = await pixiv_search(url, pages, mode, phpsessid)
+        post_ids, _, api_url = await pixiv_search(url, pages, mode, phpsessid)
         stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
             "args": [
                 {"type": "text", "value": search_id},
                 {"type": "text", "value": json.dumps(post_ids)},
                 {"type": "integer", "value": str(int(time.time()))},
+                {"type": "text", "value": api_url},
             ],
         }
         await turso_execute([stmt])
@@ -551,13 +619,15 @@ async def startup():
 async def submit_search(req: SearchRequest, bg: BackgroundTasks):
     search_id = base26_time()
     phpsessid = PHPSESSID
+    keywords = get_search_keywords(req.url)
+    api_url = f"{get_search_api_url(req.url, keywords)}&p=1"
     if req.action == "search":
         bg.add_task(bg_search_task, search_id, req.url, req.pages, req.mode, phpsessid)
     elif req.action == "scan_and_search":
         bg.add_task(
             bg_search_and_scan_task, search_id, req.url, req.pages, req.mode, phpsessid
         )
-    return {"id": search_id, "status": "started"}
+    return {"id": search_id, "status": "started", "api_url": api_url}
 
 
 @app.post("/api/submit_users")
@@ -624,7 +694,7 @@ async def get_search(search_id: str):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id, post_ids, created_at FROM pi_searches WHERE id = ?",
+                "sql": "SELECT id, post_ids, created_at, api_url FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -642,16 +712,17 @@ async def get_search(search_id: str):
         "id": row[0].get("value"),
         "post_ids": post_ids,
         "created_at": row[2].get("value"),
+        "api_url": row[3].get("value") if len(row) > 3 and row[3].get("value") else "",
         "scanned": scanned,
     }
 
 
 @app.get("/api/results/{search_id}")
-async def get_results(search_id: str):
+async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids FROM pi_searches WHERE id = ?",
+                "sql": "SELECT post_ids, api_url FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -664,23 +735,46 @@ async def get_results(search_id: str):
         return {"error": "not found"}
     post_ids = json.loads(rows[0][0].get("value", "[]"))
     scanned = await get_scanned_post_ids(post_ids)
-    items = []
-    for pid in post_ids:
-        s = scanned.get(pid)
-        items.append(
+    source = (
+        exif_items(post_ids, scanned)
+        if exif_only
+        else [
             {
                 "post_id": pid,
-                "url": s["url"] if s else None,
-                "exif_type": s["exif_type"] if s else None,
+                "url": scanned[pid]["url"] if pid in scanned else None,
+                "exif_type": scanned[pid]["exif_type"] if pid in scanned else None,
                 "scanned": pid in scanned,
             }
-        )
+            for pid in post_ids
+        ]
+    )
+    page = max(page, 1)
+    total = len(source)
+    start = (page - 1) * PAGE_SIZE
+    items = source[start : start + PAGE_SIZE]
     return {
         "search_id": search_id,
         "items": items,
-        "total": len(post_ids),
+        "total": total,
+        "page": page,
+        "page_size": PAGE_SIZE,
+        "pages": max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1),
+        "raw_total": len(post_ids),
         "scanned_count": len(scanned),
+        "api_url": rows[0][1].get("value")
+        if len(rows[0]) > 1 and rows[0][1].get("value")
+        else "",
     }
+
+
+@app.get("/api/thumb/{post_id}")
+async def get_thumb(post_id: str):
+    scanned = await get_scanned_post_ids([post_id])
+    s = scanned.get(post_id)
+    if not s or not s.get("exif_type") or not s.get("url"):
+        raise HTTPException(status_code=404, detail="thumbnail unavailable")
+    path = await create_thumb(post_id, s["url"], PHPSESSID)
+    return FileResponse(path, media_type="image/webp")
 
 
 @app.delete("/api/search/{search_id}")
@@ -701,7 +795,7 @@ async def rename_search(search_id: str, req: RenameRequest):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids, created_at FROM pi_searches WHERE id = ?",
+                "sql": "SELECT post_ids, created_at, api_url FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -714,6 +808,9 @@ async def rename_search(search_id: str, req: RenameRequest):
         return {"error": "not found"}
     post_ids_val = rows[0][0].get("value", "[]")
     created_at = rows[0][1].get("value", "0")
+    api_url = (
+        rows[0][2].get("value") if len(rows[0]) > 2 and rows[0][2].get("value") else ""
+    )
     await turso_execute(
         [
             {
@@ -721,11 +818,12 @@ async def rename_search(search_id: str, req: RenameRequest):
                 "args": [{"type": "text", "value": search_id}],
             },
             {
-                "sql": "INSERT INTO pi_searches (id, post_ids, created_at) VALUES (?, ?, ?)",
+                "sql": "INSERT INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
                 "args": [
                     {"type": "text", "value": req.new_id},
                     {"type": "text", "value": post_ids_val},
                     {"type": "integer", "value": created_at},
+                    {"type": "text", "value": api_url},
                 ],
             },
         ]
