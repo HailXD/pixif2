@@ -20,6 +20,7 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .btn-secondary:hover { background: #3a3a4e; }
 .btn-secondary:disabled { color: #666; cursor: not-allowed; }
 #submit-status { margin-top: 1rem; padding: .5rem; border-radius: 4px; font-size: .9rem; }
+#submit-status a { color: inherit; overflow-wrap: anywhere; }
 .status-ok { background: #1a3a1a; color: #6f6; }
 .status-err { background: #3a1a1a; color: #f66; }
 .hidden { display: none; }
@@ -35,6 +36,9 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .btn-icon { background: none; border: 1px solid transparent; color: #666; font-size: 1rem; cursor: pointer; padding: .1rem .4rem; border-radius: 3px; line-height: 1; }
 .btn-icon:hover { color: #e0e0e0; border-color: #555; }
 .btn-delete:hover { color: #f66; border-color: #f66; }
+.active-task { border-color: #ffb74d; }
+.mini-bar { width: 120px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; margin-left: .75rem; }
+.mini-bar div { height: 100%; background: #ffb74d; }
 
 .detail-header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 #detail-title { font-weight: bold; color: #6c63ff; }
@@ -65,6 +69,16 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .exif-7 { background: #3a1a3a; color: #ce93d8; }
 .not-scanned { color: #555; }
 .no-exif { color: #666; }
+
+.progress-empty { color: #666; padding: 1rem 0; }
+.progress-item { background: #1a1a2e; border: 1px solid #333; border-radius: 6px; padding: .75rem 1rem; margin-bottom: .5rem; }
+.progress-info { display: flex; align-items: center; gap: 1rem; margin-bottom: .5rem; font-size: .85rem; }
+.progress-id { color: #6c63ff; font-family: monospace; }
+.progress-type { color: #aaa; }
+.progress-phase { color: #ffb74d; }
+.progress-label { margin-left: auto; color: #ccc; }
+.progress-bar-bg { background: #2a2a3e; border-radius: 3px; height: 6px; overflow: hidden; }
+.progress-bar-fill { background: #6c63ff; height: 100%; transition: width .3s ease; }
 
 #viewer { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .92); display: flex; flex-direction: column; }
 #viewer.hidden { display: none; }

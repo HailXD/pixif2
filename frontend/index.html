@@ -11,6 +11,7 @@
 <div id="app">
   <nav>
     <button class="tab active" data-tab="submit">Submit</button>
+    <button class="tab" data-tab="progress">Progress</button>
     <button class="tab" data-tab="explorer">Explorer</button>
   </nav>
 
@@ -33,16 +34,14 @@
           <option value="real">Real Only</option>
         </select>
       </div>
-      <div class="form-group">
-        <label>Action</label>
-        <select id="input-action">
-          <option value="search">Search</option>
-          <option value="scan_and_search" selected>Search & Scan</option>
-        </select>
-      </div>
     </div>
     <button id="btn-submit" class="btn-primary">Submit</button>
     <div id="submit-status"></div>
+  </section>
+
+  <section id="progress" class="panel">
+    <h2>Progress</h2>
+    <div id="progress-list"></div>
   </section>
 
   <section id="explorer" class="panel">
@@ -54,7 +53,6 @@
         <span id="detail-title"></span>
         <span id="detail-stats"></span>
         <label class="check-row"><input type="checkbox" id="filter-exif" checked> Exif Only</label>
-        <button id="btn-scan" class="btn-primary">Scan</button>
       </div>
       <div id="pager"></div>
       <div id="results-grid"></div>
