@@ -86,6 +86,7 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .viewer-bar { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; padding: .75rem; background: #111; border-bottom: 1px solid #333; }
 #viewer-zoom { min-width: 4rem; text-align: center; color: #ccc; font-size: .85rem; }
 #viewer-stage { flex: 1; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 1rem; }
+#viewer-stage.dragging { cursor: grabbing; }
 #viewer-img { max-width: none; max-height: none; transform-origin: top center; transition: transform .08s ease; }
 
 @media (max-width: 800px) {

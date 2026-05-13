@@ -5,6 +5,7 @@ const LONG_DIGITS_RE = /\d{6,}/g
 const PAGE_SIZE = 60
 const SEARCH_PAGE_SIZE = 5
 let viewerScale = 1
+let viewerDrag = null
 
 
 $$(".tab").forEach(tab => {
@@ -241,6 +242,8 @@ function closeViewer() {
   $("#viewer").setAttribute("aria-hidden", "true")
   $("#viewer-img").src = ""
   $("#viewer-download").href = ""
+  viewerDrag = null
+  $("#viewer-stage").classList.remove("dragging")
 }
 
 function applyViewerZoom() {
@@ -264,6 +267,33 @@ $("#viewer-stage").addEventListener("wheel", e => {
   e.preventDefault()
   viewerScale = Math.min(Math.max(viewerScale + (e.deltaY < 0 ? .15 : -.15), .25), 6)
   applyViewerZoom()
+})
+$("#viewer-stage").addEventListener("pointerdown", e => {
+  if (e.button !== 0) return
+  const stage = $("#viewer-stage")
+  viewerDrag = {
+    x: e.clientX,
+    y: e.clientY,
+    left: stage.scrollLeft,
+    top: stage.scrollTop,
+  }
+  stage.classList.add("dragging")
+  stage.setPointerCapture(e.pointerId)
+})
+$("#viewer-stage").addEventListener("pointermove", e => {
+  if (!viewerDrag) return
+  const stage = $("#viewer-stage")
+  stage.scrollLeft = viewerDrag.left - e.clientX + viewerDrag.x
+  stage.scrollTop = viewerDrag.top - e.clientY + viewerDrag.y
+})
+$("#viewer-stage").addEventListener("pointerup", e => {
+  viewerDrag = null
+  $("#viewer-stage").classList.remove("dragging")
+  $("#viewer-stage").releasePointerCapture(e.pointerId)
+})
+$("#viewer-stage").addEventListener("pointercancel", () => {
+  viewerDrag = null
+  $("#viewer-stage").classList.remove("dragging")
 })
 window.addEventListener("keydown", e => { if (e.key === "Escape") closeViewer() })
 

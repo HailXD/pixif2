@@ -572,7 +572,7 @@ async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
     if kind == "v":
         image = image.resize((max(image.width // 2, 1), max(image.height // 2, 1)))
     else:
-        image.thumbnail((360, 360))
+        image = image.resize((max(image.width // 3, 1), max(image.height // 3, 1)))
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGB")
     image.save(out, "WEBP", quality=82 if kind == "v" else 72)
