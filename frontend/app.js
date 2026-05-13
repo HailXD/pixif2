@@ -6,6 +6,8 @@ const PAGE_SIZE = 60
 const SEARCH_PAGE_SIZE = 5
 let viewerScale = 1
 let viewerDrag = null
+let explorerEvents = null
+let explorerPage = 1
 
 
 $$(".tab").forEach(tab => {
@@ -71,10 +73,14 @@ function route() {
   $$(".panel").forEach(p => p.classList.toggle("active", p.id === tab))
   if (tab === "explorer") {
     if (parts[1]) {
+      closeExplorerEvents()
       openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
     } else {
       loadSearches(parseInt(params.get("page")) || 1)
+      openExplorerEvents()
     }
+  } else {
+    closeExplorerEvents()
   }
 }
 
@@ -85,6 +91,7 @@ function explorerHash(id, page, exifOnly) {
 
 
 async function loadSearches(page = 1) {
+  explorerPage = page
   const list = $("#search-list")
   const detail = $("#search-detail")
   detail.classList.add("hidden")
@@ -133,6 +140,23 @@ async function loadSearches(page = 1) {
   } catch (e) {
     list.innerHTML = `Error: ${e.message}`
   }
+}
+
+function openExplorerEvents() {
+  if (explorerEvents) return
+  explorerEvents = new EventSource("/api/events")
+  explorerEvents.onmessage = () => {
+    const raw = location.hash.slice(2) || "submit"
+    const [path] = raw.split("?")
+    const parts = path.split("/").filter(Boolean)
+    if ((parts[0] || "submit") === "explorer" && !parts[1]) loadSearches(explorerPage)
+  }
+}
+
+function closeExplorerEvents() {
+  if (!explorerEvents) return
+  explorerEvents.close()
+  explorerEvents = null
 }
 
 function renderSearchPager(data) {

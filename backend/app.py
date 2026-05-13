@@ -17,8 +17,8 @@ except ImportError:
 import aiohttp
 import httpx
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -57,6 +57,7 @@ PAGE_URL_CACHE_MAX_AGE = 1800
 
 app = FastAPI()
 ACTIVE_TASKS = {}
+TASK_EVENT_QUEUES = set()
 PAGE_URL_CACHE = {}
 
 FRONTEND_DIR = os.path.join(os.getcwd(), "frontend")
@@ -162,6 +163,22 @@ async def discord_notify(msg):
                     print(f"Discord webhook failed ({r.status}): {body}")
     except Exception as e:
         print(f"Discord webhook error: {repr(e)}")
+
+
+async def publish_task_event(search_id):
+    data = {"id": search_id, "at": int(time.time())}
+    for queue in list(TASK_EVENT_QUEUES):
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        queue.put_nowait(data)
+
+
+async def finish_task(search_id):
+    ACTIVE_TASKS.pop(search_id, None)
+    await publish_task_event(search_id)
 
 
 def is_ai_post(post):
@@ -606,7 +623,7 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
     finally:
-        ACTIVE_TASKS.pop(search_id, None)
+        await finish_task(search_id)
 
 
 async def bg_user_task(search_id, user_ids, phpsessid):
@@ -637,7 +654,7 @@ async def bg_user_task(search_id, user_ids, phpsessid):
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
     finally:
-        ACTIVE_TASKS.pop(search_id, None)
+        await finish_task(search_id)
 
 
 async def bg_scan_task(search_id, post_ids, phpsessid):
@@ -657,7 +674,7 @@ async def bg_scan_task(search_id, post_ids, phpsessid):
     except Exception as e:
         await discord_notify(f"`{search_id}` scan failed: {e}")
     finally:
-        ACTIVE_TASKS.pop(search_id, None)
+        await finish_task(search_id)
 
 
 async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
@@ -691,7 +708,7 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
     finally:
-        ACTIVE_TASKS.pop(search_id, None)
+        await finish_task(search_id)
 
 
 class SearchRequest(BaseModel):
@@ -995,6 +1012,25 @@ async def rename_search(search_id: str, req: RenameRequest):
 @app.get("/api/progress")
 async def get_progress():
     return [{"id": k, **v} for k, v in ACTIVE_TASKS.items()]
+
+
+@app.get("/api/events")
+async def events(request: Request):
+    queue = asyncio.Queue(maxsize=16)
+    TASK_EVENT_QUEUES.add(queue)
+
+    async def stream():
+        try:
+            while not await request.is_disconnected():
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            TASK_EVENT_QUEUES.discard(queue)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
