@@ -48,9 +48,7 @@ $("#btn-submit").addEventListener("click", async () => {
       })
     }
     const data = await resp.json()
-    status.innerHTML = data.api_url
-      ? `Submitted as ${esc(data.id)}<br><span>API URL</span> <a href="${esc(data.api_url)}" target="_blank">${esc(data.api_url)}</a>`
-      : `Submitted as ${esc(data.id)} - you can close this page`
+    status.textContent = `Submitted as ${data.id} - you can close this page`
     status.className = "status-ok"
   } catch (e) {
     status.textContent = `Error: ${e.message}`
@@ -66,7 +64,6 @@ function route() {
   const params = new URLSearchParams(qs)
   $$(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab))
   $$(".panel").forEach(p => p.classList.toggle("active", p.id === tab))
-  if (tab === "progress") loadProgress()
   if (tab === "explorer") {
     if (parts[1]) {
       openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
@@ -88,20 +85,9 @@ async function loadSearches() {
   detail.classList.add("hidden")
   list.innerHTML = "Loading..."
   try {
-    const [searchResp, taskResp] = await Promise.all([fetch("/api/searches"), fetch("/api/progress")])
+    const searchResp = await fetch("/api/searches")
     const data = await searchResp.json()
-    const tasks = await taskResp.json()
-    const active = tasks.filter(t => t.type === "search" || t.type === "search+scan" || t.type === "user_search")
-    if (!data.length && !active.length) { list.innerHTML = "No searches yet"; return }
-    const activeHtml = active.map(t => {
-      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
-      const label = t.total > 0 ? `${t.done}/${t.total}` : "..."
-      return `<div class="search-item active-task" data-id="${esc(t.id)}">
-        <span class="id">${esc(t.id)}</span>
-        <span class="time">${esc(t.type)} ${esc(t.phase)} ${label}</span>
-        <div class="mini-bar"><div style="width:${pct}%"></div></div>
-      </div>`
-    }).join("")
+    if (!data.length) { list.innerHTML = "No searches yet"; return }
     const savedHtml = data.map(s => {
       const d = new Date(parseInt(s.created_at) * 1000)
       const ts = d.toLocaleString()
@@ -114,7 +100,7 @@ async function loadSearches() {
         </span>
       </div>`
     }).join("")
-    list.innerHTML = activeHtml + savedHtml
+    list.innerHTML = savedHtml
     list.querySelectorAll(".search-item").forEach(el => {
       if (!el.dataset.id) return
       el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1, true) })
@@ -135,7 +121,6 @@ async function openSearch(id, page = 1, exifOnly = true) {
   detail.classList.remove("hidden")
   $("#detail-title").textContent = id
   $("#detail-stats").textContent = "Loading..."
-  $("#detail-api-url").innerHTML = ""
   $("#pager").innerHTML = ""
   $("#results-grid").innerHTML = ""
   $("#filter-exif").checked = exifOnly
@@ -147,8 +132,6 @@ async function openSearch(id, page = 1, exifOnly = true) {
 
     const allScanned = data.scanned_count >= data.raw_total
     $("#detail-stats").textContent = `${data.total}/${data.raw_total} shown | ${data.scanned_count}/${data.raw_total} scanned`
-    $("#detail-api-url").innerHTML = data.api_url ? `<span>API URL</span> <a href="${esc(data.api_url)}" target="_blank">${esc(data.api_url)}</a>` : ""
-
     const scanBtn = $("#btn-scan")
     if (allScanned) {
       scanBtn.textContent = "Scanned"
@@ -166,7 +149,6 @@ async function openSearch(id, page = 1, exifOnly = true) {
         })
         const d = await r.json()
         scanBtn.textContent = d.status === "already_scanned" ? "Scanned" : `Scanning ${d.to_scan}...`
-        if (d.status !== "already_scanned") location.hash = "#/progress"
       }
     }
 
@@ -303,30 +285,6 @@ async function renameSearch(id) {
   })
   location.hash = "#/explorer"
   loadSearches()
-}
-
-async function loadProgress() {
-  const el = $("#progress-list")
-  try {
-    const resp = await fetch("/api/progress")
-    const tasks = await resp.json()
-    if (!tasks.length) { el.innerHTML = '<div class="progress-empty">No active tasks</div>'; return }
-    el.innerHTML = tasks.map(t => {
-      const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
-      const label = t.total > 0 ? `${t.done} / ${t.total}` : "..."
-      return `<div class="progress-item">
-        <div class="progress-info">
-          <span class="progress-id">${t.id}</span>
-          <span class="progress-type">${t.type}</span>
-          <span class="progress-phase">${t.phase}</span>
-          <span class="progress-label">${label}</span>
-        </div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-      </div>`
-    }).join("")
-  } catch (e) {
-    el.innerHTML = `<div class="progress-empty">Error: ${e.message}</div>`
-  }
 }
 
 window.addEventListener("hashchange", route)

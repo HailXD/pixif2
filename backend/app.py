@@ -53,6 +53,8 @@ PAGE_SIZE = 60
 THUMB_MAX_AGE = 1800
 THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
 PAGE_URL_CACHE_MAX_AGE = 1800
+SCAN_LOOKUP_CHUNK = 500
+PROGRESS_MILESTONES = (25, 50, 75)
 
 app = FastAPI()
 ACTIVE_TASKS = {}
@@ -118,6 +120,18 @@ async def init_db():
             {
                 "sql": "CREATE TABLE IF NOT EXISTS pi_scans (post_id TEXT PRIMARY KEY, url TEXT, exif_type INTEGER)"
             },
+            {
+                "sql": "CREATE TABLE IF NOT EXISTS pi_search_posts (search_id TEXT NOT NULL, post_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (search_id, post_id))"
+            },
+            {
+                "sql": "CREATE INDEX IF NOT EXISTS pi_searches_created_at_idx ON pi_searches (created_at DESC)"
+            },
+            {
+                "sql": "CREATE INDEX IF NOT EXISTS pi_search_posts_search_pos_idx ON pi_search_posts (search_id, pos)"
+            },
+            {
+                "sql": "CREATE INDEX IF NOT EXISTS pi_search_posts_post_idx ON pi_search_posts (post_id)"
+            },
         ]
     )
     try:
@@ -146,6 +160,38 @@ async def discord_notify(msg):
                     print(f"Discord webhook failed ({r.status}): {body}")
     except Exception as e:
         print(f"Discord webhook error: {repr(e)}")
+
+
+async def start_task(search_id, task_type, phase, total):
+    ACTIVE_TASKS[search_id] = {
+        "type": task_type,
+        "phase": phase,
+        "total": total,
+        "done": 0,
+        "sent": set(),
+    }
+    await discord_notify(f"`{search_id}` started")
+
+
+async def update_task(search_id, done=None, total=None, phase=None):
+    task = ACTIVE_TASKS.get(search_id)
+    if not task:
+        return
+    if done is not None:
+        task["done"] = done
+    if total is not None:
+        task["total"] = total
+    if phase is not None and task.get("phase") != phase:
+        task["phase"] = phase
+        task["sent"] = set()
+    total = task.get("total") or 0
+    if total <= 0:
+        return
+    pct = int(task.get("done", 0) * 100 / total)
+    for mark in PROGRESS_MILESTONES:
+        if pct >= mark and mark not in task["sent"]:
+            task["sent"].add(mark)
+            await discord_notify(f"`{search_id}` {mark}% {task['phase']}")
 
 
 def is_ai_post(post):
@@ -214,6 +260,48 @@ async def save_search(search_id, post_ids, api_url):
         ],
     }
     await turso_execute([stmt])
+    await save_search_posts(search_id, post_ids)
+
+
+async def save_search_posts(search_id, post_ids):
+    stmts = []
+    for pos, post_id in enumerate(post_ids):
+        stmts.append(
+            {
+                "sql": "INSERT OR IGNORE INTO pi_search_posts (search_id, post_id, pos) VALUES (?, ?, ?)",
+                "args": [
+                    {"type": "text", "value": search_id},
+                    {"type": "text", "value": str(post_id)},
+                    {"type": "integer", "value": str(pos)},
+                ],
+            }
+        )
+    for i in range(0, len(stmts), 200):
+        await turso_batch(stmts[i : i + 200])
+
+
+async def ensure_search_posts(search_id, post_ids):
+    resp = await turso_execute(
+        [
+            {
+                "sql": "SELECT COUNT(*) FROM pi_search_posts WHERE search_id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            }
+        ]
+    )
+    rows = (resp.get("results") or [{}])[0].get("response", {}).get("result", {}).get("rows", [])
+    count = int(rows[0][0].get("value", "0")) if rows else 0
+    if count == len(post_ids):
+        return
+    await turso_execute(
+        [
+            {
+                "sql": "DELETE FROM pi_search_posts WHERE search_id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            }
+        ]
+    )
+    await save_search_posts(search_id, post_ids)
 
 
 async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
@@ -230,8 +318,7 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
         for coro in asyncio.as_completed(tasks):
             data = await coro
             done += 1
-            if search_id in ACTIVE_TASKS:
-                ACTIVE_TASKS[search_id].update({"total": pages, "done": done})
+            await update_task(search_id, done=done, total=pages)
             if data.get("error"):
                 continue
             body = data.get("body") or {}
@@ -251,7 +338,7 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
     return post_ids, keywords, first_url
 
 
-async def pixiv_user_posts(user_ids, phpsessid):
+async def pixiv_user_posts(user_ids, phpsessid, task_id=None):
     cookies = {"PHPSESSID": phpsessid}
     results = []
     async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
@@ -271,6 +358,8 @@ async def pixiv_user_posts(user_ids, phpsessid):
                 )
                 username = (udata.get("body") or {}).get("name") or ""
             results.append({"user_id": uid, "post_ids": posts, "username": username})
+            if task_id:
+                await update_task(task_id, done=len(results), total=len(user_ids))
     return results
 
 
@@ -409,8 +498,8 @@ async def run_scan(post_ids, phpsessid, task_id=None, save_live=False):
             result = await coro
             results.append(result)
             pending.append(result)
-            if task_id and task_id in ACTIVE_TASKS:
-                ACTIVE_TASKS[task_id]["done"] = len(results)
+            if task_id:
+                await update_task(task_id, done=len(results), total=len(post_ids))
             if save_live and len(pending) >= 20:
                 await save_scan_results(pending)
                 pending = []
@@ -443,15 +532,19 @@ async def save_scan_results(results):
 async def get_scanned_post_ids(post_ids):
     if not post_ids:
         return {}
-    chunks = [post_ids[i : i + 200] for i in range(0, len(post_ids), 200)]
-    scanned = {}
-    for chunk in chunks:
+    chunks = [
+        post_ids[i : i + SCAN_LOOKUP_CHUNK]
+        for i in range(0, len(post_ids), SCAN_LOOKUP_CHUNK)
+    ]
+
+    async def fetch_chunk(chunk):
         placeholders = ",".join("?" for _ in chunk)
         stmt = {
             "sql": f"SELECT post_id, url, exif_type FROM pi_scans WHERE post_id IN ({placeholders})",
             "args": [{"type": "text", "value": str(pid)} for pid in chunk],
         }
         resp = await turso_execute([stmt])
+        out = {}
         results = resp.get("results") or []
         if results and "response" in results[0]:
             rows = results[0]["response"].get("result", {}).get("rows", [])
@@ -459,7 +552,12 @@ async def get_scanned_post_ids(post_ids):
                 pid = row[0].get("value")
                 url_val = row[1].get("value") if row[1].get("type") != "null" else ""
                 et = row[2].get("value") if row[2].get("type") != "null" else None
-                scanned[pid] = {"url": url_val, "exif_type": int(et) if et else None}
+                out[pid] = {"url": url_val, "exif_type": int(et) if et else None}
+        return out
+
+    scanned = {}
+    for result in await asyncio.gather(*(fetch_chunk(chunk) for chunk in chunks)):
+        scanned.update(result)
     return scanned
 
 
@@ -545,7 +643,8 @@ async def fetch_pixiv_bytes(url, phpsessid):
 
 async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
     cleanup_thumbs()
-    out = THUMB_DIR / f"{post_id}_p{page}_{kind}.webp"
+    cache_kind = "v33" if kind == "v" else "t10"
+    out = THUMB_DIR / f"{post_id}_p{page}_{cache_kind}.webp"
     if out.exists():
         os.utime(out, None)
         return out
@@ -554,9 +653,9 @@ async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
         raise HTTPException(status_code=404, detail="image not found")
     image = Image.open(io.BytesIO(data))
     if kind == "v":
-        image = image.resize((max(image.width // 2, 1), max(image.height // 2, 1)))
+        image = image.resize((max(image.width // 3, 1), max(image.height // 3, 1)))
     else:
-        image.thumbnail((360, 360))
+        image = image.resize((max(image.width // 10, 1), max(image.height // 10, 1)))
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGB")
     image.save(out, "WEBP", quality=82 if kind == "v" else 72)
@@ -577,13 +676,7 @@ def image_links(post_id, url):
 
 
 async def bg_search_task(search_id, url, pages, mode, phpsessid):
-    ACTIVE_TASKS[search_id] = {
-        "type": "search",
-        "phase": "searching",
-        "total": pages,
-        "done": 0,
-    }
-    await discord_notify(f"`{search_id}` started")
+    await start_task(search_id, "search", "searching", pages)
     try:
         post_ids, _, _ = await pixiv_search_live(url, pages, mode, phpsessid, search_id)
         await discord_notify(f"`{search_id}` completed - {len(post_ids)} posts found")
@@ -594,29 +687,14 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
 
 
 async def bg_user_task(search_id, user_ids, phpsessid):
-    ACTIVE_TASKS[search_id] = {
-        "type": "user_search",
-        "phase": "searching",
-        "total": len(user_ids),
-        "done": 0,
-    }
-    await discord_notify(f"`{search_id}` started (users)")
+    await start_task(search_id, "user_search", "searching", len(user_ids))
     try:
-        results = await pixiv_user_posts(user_ids, phpsessid)
+        results = await pixiv_user_posts(user_ids, phpsessid, search_id)
         all_post_ids = []
         for r in results:
             all_post_ids.extend(r["post_ids"])
         all_post_ids = list(dict.fromkeys(all_post_ids))
-        stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
-            "args": [
-                {"type": "text", "value": search_id},
-                {"type": "text", "value": json.dumps(all_post_ids)},
-                {"type": "integer", "value": str(int(time.time()))},
-                {"type": "text", "value": ""},
-            ],
-        }
-        await turso_execute([stmt])
+        await save_search(search_id, all_post_ids, "")
         await discord_notify(
             f"`{search_id}` completed - {len(all_post_ids)} posts from {len(user_ids)} users"
         )
@@ -627,18 +705,12 @@ async def bg_user_task(search_id, user_ids, phpsessid):
 
 
 async def bg_scan_task(search_id, post_ids, phpsessid):
-    ACTIVE_TASKS[search_id] = {
-        "type": "scan",
-        "phase": "scanning",
-        "total": len(post_ids),
-        "done": 0,
-    }
-    await discord_notify(f"`{search_id}` scan started ({len(post_ids)} posts)")
+    await start_task(search_id, "scan", "scanning", len(post_ids))
     try:
         results = await run_scan(post_ids, phpsessid, task_id=search_id, save_live=True)
         found = sum(1 for _, url, _ in results if url)
         await discord_notify(
-            f"`{search_id}` scan completed - {found}/{len(post_ids)} have exif"
+            f"`{search_id}` completed - {found}/{len(post_ids)} have exif"
         )
     except Exception as e:
         await discord_notify(f"`{search_id}` scan failed: {e}")
@@ -647,33 +719,22 @@ async def bg_scan_task(search_id, post_ids, phpsessid):
 
 
 async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
-    ACTIVE_TASKS[search_id] = {
-        "type": "search+scan",
-        "phase": "searching",
-        "total": pages,
-        "done": 0,
-    }
-    await discord_notify(f"`{search_id}` search+scan started")
+    await start_task(search_id, "search+scan", "searching", pages)
     try:
         post_ids, _, _ = await pixiv_search_live(url, pages, mode, phpsessid, search_id)
-        await discord_notify(
-            f"`{search_id}` search done - {len(post_ids)} posts, scanning..."
-        )
         already = await get_scanned_post_ids(post_ids)
         to_scan = [pid for pid in post_ids if pid not in already]
         if to_scan:
-            ACTIVE_TASKS[search_id].update(
-                {"phase": "scanning", "total": len(to_scan), "done": 0}
-            )
+            await update_task(search_id, done=0, total=len(to_scan), phase="scanning")
             results = await run_scan(
                 to_scan, phpsessid, task_id=search_id, save_live=True
             )
             found = sum(1 for _, url, _ in results if url)
             await discord_notify(
-                f"`{search_id}` scan completed - {found}/{len(to_scan)} new exif"
+                f"`{search_id}` completed - {len(post_ids)} posts, {found}/{len(to_scan)} new exif"
             )
         else:
-            await discord_notify(f"`{search_id}` all {len(post_ids)} already scanned")
+            await discord_notify(f"`{search_id}` completed - all {len(post_ids)} already scanned")
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
     finally:
@@ -715,15 +776,13 @@ async def startup():
 async def submit_search(req: SearchRequest, bg: BackgroundTasks):
     search_id = base26_time()
     phpsessid = PHPSESSID
-    keywords = get_search_keywords(req.url)
-    api_url = f"{get_search_api_url(req.url, keywords)}&p=1"
     if req.action == "search":
         bg.add_task(bg_search_task, search_id, req.url, req.pages, req.mode, phpsessid)
     elif req.action == "scan_and_search":
         bg.add_task(
             bg_search_and_scan_task, search_id, req.url, req.pages, req.mode, phpsessid
         )
-    return {"id": search_id, "status": "started", "api_url": api_url}
+    return {"id": search_id, "status": "started"}
 
 
 @app.post("/api/submit_users")
@@ -818,7 +877,7 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT post_ids, api_url FROM pi_searches WHERE id = ?",
+                "sql": "SELECT post_ids FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
         ]
@@ -830,25 +889,63 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
     if not rows:
         return {"error": "not found"}
     post_ids = json.loads(rows[0][0].get("value", "[]"))
-    scanned = await get_scanned_post_ids(post_ids)
-    source = (
-        exif_items(post_ids, scanned)
-        if exif_only
-        else [
+    await ensure_search_posts(search_id, post_ids)
+    page = max(page, 1)
+    offset = (page - 1) * PAGE_SIZE
+    args = [{"type": "text", "value": search_id}]
+    if exif_only:
+        total_sql = "SELECT COUNT(*) FROM pi_search_posts p JOIN pi_scans s ON s.post_id = p.post_id WHERE p.search_id = ? AND s.exif_type IS NOT NULL"
+        item_sql = "SELECT p.post_id, s.url, s.exif_type, 1 FROM pi_search_posts p JOIN pi_scans s ON s.post_id = p.post_id WHERE p.search_id = ? AND s.exif_type IS NOT NULL ORDER BY p.pos LIMIT ? OFFSET ?"
+    else:
+        total_sql = "SELECT COUNT(*) FROM pi_search_posts WHERE search_id = ?"
+        item_sql = "SELECT p.post_id, s.url, s.exif_type, CASE WHEN s.post_id IS NULL THEN 0 ELSE 1 END FROM pi_search_posts p LEFT JOIN pi_scans s ON s.post_id = p.post_id WHERE p.search_id = ? ORDER BY p.pos LIMIT ? OFFSET ?"
+    resp = await turso_execute(
+        [
+            {"sql": total_sql, "args": args},
             {
-                "post_id": pid,
-                "url": scanned[pid]["url"] if pid in scanned else None,
-                "exif_type": scanned[pid]["exif_type"] if pid in scanned else None,
-                "scanned": pid in scanned,
-                **image_links(pid, scanned[pid]["url"] if pid in scanned else ""),
-            }
-            for pid in post_ids
+                "sql": "SELECT COUNT(*) FROM pi_search_posts p JOIN pi_scans s ON s.post_id = p.post_id WHERE p.search_id = ?",
+                "args": args,
+            },
+            {
+                "sql": item_sql,
+                "args": args
+                + [
+                    {"type": "integer", "value": str(PAGE_SIZE)},
+                    {"type": "integer", "value": str(offset)},
+                ],
+            },
         ]
     )
-    page = max(page, 1)
-    total = len(source)
-    start = (page - 1) * PAGE_SIZE
-    items = source[start : start + PAGE_SIZE]
+    result_rows = [
+        r.get("response", {}).get("result", {}).get("rows", [])
+        for r in resp.get("results", [])
+    ]
+    total = (
+        int(result_rows[0][0][0].get("value", "0"))
+        if result_rows and result_rows[0]
+        else 0
+    )
+    scanned_count = (
+        int(result_rows[1][0][0].get("value", "0"))
+        if len(result_rows) > 1 and result_rows[1]
+        else 0
+    )
+    items = []
+    item_rows = result_rows[2] if len(result_rows) > 2 else []
+    for row in item_rows:
+        pid = row[0].get("value")
+        url = row[1].get("value") if row[1].get("type") != "null" else ""
+        exif_type = row[2].get("value") if row[2].get("type") != "null" else None
+        scanned = row[3].get("value") == "1"
+        items.append(
+            {
+                "post_id": pid,
+                "url": url,
+                "exif_type": int(exif_type) if exif_type else None,
+                "scanned": scanned,
+                **image_links(pid, url),
+            }
+        )
     return {
         "search_id": search_id,
         "items": items,
@@ -857,10 +954,7 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
         "page_size": PAGE_SIZE,
         "pages": max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1),
         "raw_total": len(post_ids),
-        "scanned_count": len(scanned),
-        "api_url": rows[0][1].get("value")
-        if len(rows[0]) > 1 and rows[0][1].get("value")
-        else "",
+        "scanned_count": scanned_count,
     }
 
 
@@ -924,6 +1018,10 @@ async def delete_search(search_id: str):
     await turso_execute(
         [
             {
+                "sql": "DELETE FROM pi_search_posts WHERE search_id = ?",
+                "args": [{"type": "text", "value": search_id}],
+            },
+            {
                 "sql": "DELETE FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
             }
@@ -953,8 +1051,14 @@ async def rename_search(search_id: str, req: RenameRequest):
     api_url = (
         rows[0][2].get("value") if len(rows[0]) > 2 and rows[0][2].get("value") else ""
     )
+    post_ids = json.loads(post_ids_val)
+    await ensure_search_posts(search_id, post_ids)
     await turso_execute(
         [
+            {
+                "sql": "DELETE FROM pi_search_posts WHERE search_id = ?",
+                "args": [{"type": "text", "value": req.new_id}],
+            },
             {
                 "sql": "DELETE FROM pi_searches WHERE id = ?",
                 "args": [{"type": "text", "value": search_id}],
@@ -968,14 +1072,16 @@ async def rename_search(search_id: str, req: RenameRequest):
                     {"type": "text", "value": api_url},
                 ],
             },
+            {
+                "sql": "UPDATE pi_search_posts SET search_id = ? WHERE search_id = ?",
+                "args": [
+                    {"type": "text", "value": req.new_id},
+                    {"type": "text", "value": search_id},
+                ],
+            },
         ]
     )
     return {"status": "renamed", "new_id": req.new_id}
-
-
-@app.get("/api/progress")
-async def get_progress():
-    return [{"id": k, **v} for k, v in ACTIVE_TASKS.items()]
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
