@@ -18,7 +18,7 @@ import aiohttp
 import httpx
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -52,9 +52,11 @@ FULL_IMAGE_LIMIT = 32
 PAGE_SIZE = 60
 THUMB_MAX_AGE = 1800
 THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
+PAGE_URL_CACHE_MAX_AGE = 1800
 
 app = FastAPI()
 ACTIVE_TASKS = {}
+PAGE_URL_CACHE = {}
 
 FRONTEND_DIR = os.path.join(os.getcwd(), "frontend")
 
@@ -200,27 +202,53 @@ def get_search_api_url(raw, keywords):
     return f"https://www.pixiv.net/ajax/search/artworks/{encoded}?{params}"
 
 
-async def pixiv_search(url, pages, mode, phpsessid):
+async def save_search(search_id, post_ids, api_url):
+    stmt = {
+        "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, COALESCE((SELECT created_at FROM pi_searches WHERE id = ?), ?), ?)",
+        "args": [
+            {"type": "text", "value": search_id},
+            {"type": "text", "value": json.dumps(post_ids)},
+            {"type": "text", "value": search_id},
+            {"type": "integer", "value": str(int(time.time()))},
+            {"type": "text", "value": api_url},
+        ],
+    }
+    await turso_execute([stmt])
+
+
+async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
     keywords = get_search_keywords(url)
     api_url = get_search_api_url(url, keywords)
+    first_url = f"{api_url}&p=1"
+    await save_search(search_id, [], first_url)
     cookies = {"PHPSESSID": phpsessid}
     post_ids = []
+    seen = set()
+    done = 0
     async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
         tasks = [fetch_page(session, f"{api_url}&p={p}") for p in range(1, pages + 1)]
-        responses = await asyncio.gather(*tasks)
-    for data in responses:
-        if data.get("error"):
-            break
-        body = data.get("body") or {}
-        posts = (body.get("illustManga") or {}).get("data") or []
-        if not posts:
-            break
-        if mode == "ai":
-            posts = [p for p in posts if is_ai_post(p)]
-        elif mode == "real":
-            posts = [p for p in posts if not is_ai_post(p)]
-        post_ids.extend([str(p["id"]) for p in posts if p.get("id")])
-    return list(dict.fromkeys(post_ids)), keywords, f"{api_url}&p=1"
+        for coro in asyncio.as_completed(tasks):
+            data = await coro
+            done += 1
+            if search_id in ACTIVE_TASKS:
+                ACTIVE_TASKS[search_id].update({"total": pages, "done": done})
+            if data.get("error"):
+                continue
+            body = data.get("body") or {}
+            posts = (body.get("illustManga") or {}).get("data") or []
+            if mode == "ai":
+                posts = [p for p in posts if is_ai_post(p)]
+            elif mode == "real":
+                posts = [p for p in posts if not is_ai_post(p)]
+            for post in posts:
+                pid = str(post.get("id") or "")
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    post_ids.append(pid)
+            if done == 1 or done % 5 == 0:
+                await save_search(search_id, post_ids, first_url)
+    await save_search(search_id, post_ids, first_url)
+    return post_ids, keywords, first_url
 
 
 async def pixiv_user_posts(user_ids, phpsessid):
@@ -249,6 +277,28 @@ async def pixiv_user_posts(user_ids, phpsessid):
 async def fetch_page(session, url):
     async with session.get(url) as r:
         return await r.json()
+
+
+async def get_post_pages(post_id, session):
+    key = str(post_id)
+    cached = PAGE_URL_CACHE.get(key)
+    now = time.time()
+    if cached and now - cached["time"] < PAGE_URL_CACHE_MAX_AGE:
+        return cached["pages"]
+    data = await fetch_page(session, f"https://www.pixiv.net/ajax/illust/{post_id}/pages")
+    pages = []
+    for page in data.get("body") or []:
+        urls = page.get("urls") or {}
+        pages.append(
+            {
+                "original": urls.get("original") or "",
+                "regular": urls.get("regular") or "",
+                "small": urls.get("small") or "",
+                "thumb_mini": urls.get("thumb_mini") or "",
+            }
+        )
+    PAGE_URL_CACHE[key] = {"time": now, "pages": pages}
+    return pages
 
 
 def parse_png_metadata(data):
@@ -306,14 +356,8 @@ def has_stealth_png_bytes(data):
 async def scan_post(post_id, session, post_sem, exif_sem, img_sem):
     async with post_sem:
         try:
-            data = await fetch_page(
-                session, f"https://www.pixiv.net/ajax/illust/{post_id}/pages"
-            )
-            image_urls = [
-                p["urls"]["original"]
-                for p in data["body"]
-                if "png" in p["urls"]["original"]
-            ]
+            pages = await get_post_pages(post_id, session)
+            image_urls = [p["original"] for p in pages if "png" in p["original"]]
             for url in image_urls:
                 metadata = await get_exif_range(url, session, exif_sem)
                 exif_type = determine_exif_type(metadata)
@@ -350,7 +394,7 @@ async def fetch_image(session, url, sem):
         return await r.read()
 
 
-async def run_scan(post_ids, phpsessid, task_id=None):
+async def run_scan(post_ids, phpsessid, task_id=None, save_live=False):
     post_sem = asyncio.Semaphore(POST_SCAN_LIMIT)
     exif_sem = asyncio.Semaphore(EXIF_RANGE_LIMIT)
     img_sem = asyncio.Semaphore(FULL_IMAGE_LIMIT)
@@ -360,11 +404,18 @@ async def run_scan(post_ids, phpsessid, task_id=None):
         tasks = [
             scan_post(pid, session, post_sem, exif_sem, img_sem) for pid in post_ids
         ]
+        pending = []
         for coro in asyncio.as_completed(tasks):
             result = await coro
             results.append(result)
+            pending.append(result)
             if task_id and task_id in ACTIVE_TASKS:
                 ACTIVE_TASKS[task_id]["done"] = len(results)
+            if save_live and len(pending) >= 20:
+                await save_scan_results(pending)
+                pending = []
+        if save_live and pending:
+            await save_scan_results(pending)
     return results
 
 
@@ -424,6 +475,7 @@ def exif_items(post_ids, scanned):
                 "url": s.get("url"),
                 "exif_type": s.get("exif_type"),
                 "scanned": True,
+                **image_links(pid, s.get("url")),
             }
         )
     return items
@@ -440,16 +492,64 @@ def cleanup_thumbs():
             pass
 
 
-async def create_thumb(post_id, short_url, phpsessid):
+def page_num_from_url(url):
+    if not url:
+        return 0
+    name = url.rsplit("/", 1)[-1]
+    if "_p" not in name:
+        return 0
+    try:
+        return int(name.rsplit("_p", 1)[1].split(".", 1)[0])
+    except ValueError:
+        return 0
+
+
+def media_type_from_url(url):
+    ext = urlsplit(url).path.rsplit(".", 1)[-1].casefold()
+    if ext in ("jpg", "jpeg"):
+        return "image/jpeg"
+    if ext == "png":
+        return "image/png"
+    if ext == "gif":
+        return "image/gif"
+    if ext == "webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+async def get_pixiv_image_url(post_id, page, size, phpsessid):
+    cookies = {"PHPSESSID": phpsessid}
+    async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
+        pages = await get_post_pages(post_id, session)
+    if not pages:
+        raise HTTPException(status_code=404, detail="image not found")
+    page = min(max(page, 0), len(pages) - 1)
+    urls = pages[page]
+    if size == "full":
+        url = urls.get("original") or urls.get("regular") or urls.get("small")
+    else:
+        url = urls.get("regular") or urls.get("small") or urls.get("original")
+    if not url:
+        raise HTTPException(status_code=404, detail="image not found")
+    return url
+
+
+async def fetch_pixiv_bytes(url, phpsessid):
+    cookies = {"PHPSESSID": phpsessid}
+    async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
+        async with session.get(url) as r:
+            if r.status >= 400:
+                raise HTTPException(status_code=r.status, detail="image fetch failed")
+            return await r.read(), r.headers.get("Content-Type") or media_type_from_url(url)
+
+
+async def create_thumb(post_id, image_url, phpsessid, page=0):
     cleanup_thumbs()
-    out = THUMB_DIR / f"{post_id}.webp"
+    out = THUMB_DIR / f"{post_id}_p{page}.webp"
     if out.exists():
         os.utime(out, None)
         return out
-    url = short_url if short_url.startswith("http") else IMG_BASE + short_url
-    cookies = {"PHPSESSID": phpsessid}
-    async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
-        data = await fetch_image(session, url, asyncio.Semaphore(1))
+    data, _ = await fetch_pixiv_bytes(image_url, phpsessid)
     if not data:
         raise HTTPException(status_code=404, detail="image not found")
     image = Image.open(io.BytesIO(data))
@@ -460,26 +560,27 @@ async def create_thumb(post_id, short_url, phpsessid):
     return out
 
 
+def image_links(post_id, url):
+    page = page_num_from_url(url)
+    suffix = f"?page={page}"
+    pid = quote(str(post_id), safe="")
+    return {
+        "image_url": f"/api/image/{pid}/thumb{suffix}",
+        "full_image_url": f"/api/image/{pid}/full{suffix}",
+        "page": page,
+    }
+
+
 async def bg_search_task(search_id, url, pages, mode, phpsessid):
     ACTIVE_TASKS[search_id] = {
         "type": "search",
         "phase": "searching",
-        "total": 0,
+        "total": pages,
         "done": 0,
     }
     await discord_notify(f"`{search_id}` started")
     try:
-        post_ids, _, api_url = await pixiv_search(url, pages, mode, phpsessid)
-        stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
-            "args": [
-                {"type": "text", "value": search_id},
-                {"type": "text", "value": json.dumps(post_ids)},
-                {"type": "integer", "value": str(int(time.time()))},
-                {"type": "text", "value": api_url},
-            ],
-        }
-        await turso_execute([stmt])
+        post_ids, _, _ = await pixiv_search_live(url, pages, mode, phpsessid, search_id)
         await discord_notify(f"`{search_id}` completed - {len(post_ids)} posts found")
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
@@ -529,8 +630,7 @@ async def bg_scan_task(search_id, post_ids, phpsessid):
     }
     await discord_notify(f"`{search_id}` scan started ({len(post_ids)} posts)")
     try:
-        results = await run_scan(post_ids, phpsessid, task_id=search_id)
-        await save_scan_results(results)
+        results = await run_scan(post_ids, phpsessid, task_id=search_id, save_live=True)
         found = sum(1 for _, url, _ in results if url)
         await discord_notify(
             f"`{search_id}` scan completed - {found}/{len(post_ids)} have exif"
@@ -545,22 +645,12 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
     ACTIVE_TASKS[search_id] = {
         "type": "search+scan",
         "phase": "searching",
-        "total": 0,
+        "total": pages,
         "done": 0,
     }
     await discord_notify(f"`{search_id}` search+scan started")
     try:
-        post_ids, _, api_url = await pixiv_search(url, pages, mode, phpsessid)
-        stmt = {
-            "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids, created_at, api_url) VALUES (?, ?, ?, ?)",
-            "args": [
-                {"type": "text", "value": search_id},
-                {"type": "text", "value": json.dumps(post_ids)},
-                {"type": "integer", "value": str(int(time.time()))},
-                {"type": "text", "value": api_url},
-            ],
-        }
-        await turso_execute([stmt])
+        post_ids, _, _ = await pixiv_search_live(url, pages, mode, phpsessid, search_id)
         await discord_notify(
             f"`{search_id}` search done - {len(post_ids)} posts, scanning..."
         )
@@ -570,8 +660,9 @@ async def bg_search_and_scan_task(search_id, url, pages, mode, phpsessid):
             ACTIVE_TASKS[search_id].update(
                 {"phase": "scanning", "total": len(to_scan), "done": 0}
             )
-            results = await run_scan(to_scan, phpsessid, task_id=search_id)
-            await save_scan_results(results)
+            results = await run_scan(
+                to_scan, phpsessid, task_id=search_id, save_live=True
+            )
             found = sum(1 for _, url, _ in results if url)
             await discord_notify(
                 f"`{search_id}` scan completed - {found}/{len(to_scan)} new exif"
@@ -744,6 +835,7 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
                 "url": scanned[pid]["url"] if pid in scanned else None,
                 "exif_type": scanned[pid]["exif_type"] if pid in scanned else None,
                 "scanned": pid in scanned,
+                **image_links(pid, scanned[pid]["url"] if pid in scanned else ""),
             }
             for pid in post_ids
         ]
@@ -767,14 +859,31 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
     }
 
 
+@app.get("/api/image/{post_id}/thumb")
+async def get_image_thumb(post_id: str, page: int = 0):
+    image_url = await get_pixiv_image_url(post_id, page, "thumb", PHPSESSID)
+    path = await create_thumb(post_id, image_url, PHPSESSID, page)
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": f"public, max-age={THUMB_MAX_AGE}"},
+    )
+
+
+@app.get("/api/image/{post_id}/full")
+async def get_image_full(post_id: str, page: int = 0):
+    image_url = await get_pixiv_image_url(post_id, page, "full", PHPSESSID)
+    data, content_type = await fetch_pixiv_bytes(image_url, PHPSESSID)
+    return Response(
+        data,
+        media_type=content_type,
+        headers={"Cache-Control": f"public, max-age={THUMB_MAX_AGE}"},
+    )
+
+
 @app.get("/api/thumb/{post_id}")
 async def get_thumb(post_id: str):
-    scanned = await get_scanned_post_ids([post_id])
-    s = scanned.get(post_id)
-    if not s or not s.get("exif_type") or not s.get("url"):
-        raise HTTPException(status_code=404, detail="thumbnail unavailable")
-    path = await create_thumb(post_id, s["url"], PHPSESSID)
-    return FileResponse(path, media_type="image/webp")
+    return await get_image_thumb(post_id)
 
 
 @app.delete("/api/search/{search_id}")

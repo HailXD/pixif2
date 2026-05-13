@@ -3,6 +3,7 @@ const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const LONG_DIGITS_RE = /\d{6,}/g
 const PAGE_SIZE = 60
+let viewerScale = 1
 
 
 $$(".tab").forEach(tab => {
@@ -95,7 +96,7 @@ async function loadSearches() {
     const activeHtml = active.map(t => {
       const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
       const label = t.total > 0 ? `${t.done}/${t.total}` : "..."
-      return `<div class="search-item active-task">
+      return `<div class="search-item active-task" data-id="${esc(t.id)}">
         <span class="id">${esc(t.id)}</span>
         <span class="time">${esc(t.type)} ${esc(t.phase)} ${label}</span>
         <div class="mini-bar"><div style="width:${pct}%"></div></div>
@@ -117,8 +118,10 @@ async function loadSearches() {
     list.querySelectorAll(".search-item").forEach(el => {
       if (!el.dataset.id) return
       el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1, true) })
-      el.querySelector(".btn-rename").addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
-      el.querySelector(".btn-delete").addEventListener("click", e => { e.stopPropagation(); deleteSearch(el.dataset.id) })
+      const rename = el.querySelector(".btn-rename")
+      const del = el.querySelector(".btn-delete")
+      if (rename) rename.addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
+      if (del) del.addEventListener("click", e => { e.stopPropagation(); deleteSearch(el.dataset.id) })
     })
   } catch (e) {
     list.innerHTML = `Error: ${e.message}`
@@ -197,7 +200,9 @@ function renderResults(data) {
     } else {
       badge = `<span class="no-exif">NIL</span>`
     }
-    const thumb = item.exif_type ? `<div class="thumb" data-pid="${pid}"></div>` : ""
+    const thumb = item.image_url
+      ? `<button class="thumb" data-full="${esc(item.full_image_url)}"><img src="${esc(item.image_url)}" loading="lazy" alt="${esc(label)}"></button>`
+      : ""
     return `<div class="result-card" data-pid="${pid}">
       ${thumb}
       <span class="result-link">${label}</span><br>${badge}
@@ -210,13 +215,50 @@ function renderResults(data) {
     })
   })
   grid.querySelectorAll(".thumb").forEach(el => {
-    const pid = el.dataset.pid
-    const img = new Image()
-    img.onload = () => { el.classList.add("thumb-loaded"); el.replaceChildren(img) }
-    img.onerror = () => el.classList.add("thumb-error")
-    img.src = `/api/thumb/${encodeURIComponent(pid)}`
+    el.addEventListener("click", () => openViewer(el.dataset.full))
+    el.querySelector("img").addEventListener("load", () => el.classList.add("thumb-loaded"))
+    el.querySelector("img").addEventListener("error", () => el.classList.add("thumb-error"))
   })
 }
+
+function openViewer(src) {
+  if (!src) return
+  viewerScale = 1
+  $("#viewer-img").src = src
+  $("#viewer").classList.remove("hidden")
+  $("#viewer").setAttribute("aria-hidden", "false")
+  applyViewerZoom()
+}
+
+function closeViewer() {
+  $("#viewer").classList.add("hidden")
+  $("#viewer").setAttribute("aria-hidden", "true")
+  $("#viewer-img").src = ""
+}
+
+function applyViewerZoom() {
+  $("#viewer-img").style.transform = `scale(${viewerScale})`
+  $("#viewer-zoom").textContent = `${Math.round(viewerScale * 100)}%`
+}
+
+$("#viewer-zoom-in").addEventListener("click", () => {
+  viewerScale = Math.min(viewerScale + .25, 6)
+  applyViewerZoom()
+})
+
+$("#viewer-zoom-out").addEventListener("click", () => {
+  viewerScale = Math.max(viewerScale - .25, .25)
+  applyViewerZoom()
+})
+
+$("#viewer-close").addEventListener("click", closeViewer)
+$("#viewer").addEventListener("click", e => { if (e.target.id === "viewer") closeViewer() })
+$("#viewer-stage").addEventListener("wheel", e => {
+  e.preventDefault()
+  viewerScale = Math.min(Math.max(viewerScale + (e.deltaY < 0 ? .15 : -.15), .25), 6)
+  applyViewerZoom()
+})
+window.addEventListener("keydown", e => { if (e.key === "Escape") closeViewer() })
 
 function renderPager(id, data, exifOnly) {
   const pager = $("#pager")
