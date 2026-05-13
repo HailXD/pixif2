@@ -39,6 +39,7 @@ input:focus, select:focus { outline: none; border-color: #6c63ff; }
 .active-task { border-color: #ffb74d; }
 .mini-bar { width: 120px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; margin-left: .75rem; }
 .mini-bar div { height: 100%; background: #ffb74d; }
+.list-pager { display: flex; align-items: center; gap: .75rem; margin-top: .5rem; color: #888; font-size: .85rem; }
 
 .detail-header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 #detail-title { font-weight: bold; color: #6c63ff; }

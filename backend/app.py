@@ -50,6 +50,7 @@ POST_SCAN_LIMIT = 64
 EXIF_RANGE_LIMIT = 96
 FULL_IMAGE_LIMIT = 32
 PAGE_SIZE = 60
+SEARCH_PAGE_SIZE = 5
 THUMB_MAX_AGE = 1800
 THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
 PAGE_URL_CACHE_MAX_AGE = 1800
@@ -232,7 +233,6 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
     keywords = get_search_keywords(url)
     api_url = get_search_api_url(url, keywords)
     first_url = f"{api_url}&p=1"
-    await save_search(search_id, [])
     cookies = {"PHPSESSID": phpsessid}
     post_ids = []
     seen = set()
@@ -257,7 +257,7 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
                 if pid and pid not in seen:
                     seen.add(pid)
                     post_ids.append(pid)
-            if done == 1 or done % 5 == 0:
+            if done % 25 == 0:
                 await save_search(search_id, post_ids)
     await save_search(search_id, post_ids)
     return post_ids, keywords, first_url
@@ -455,23 +455,27 @@ async def save_scan_results(results):
 async def get_scanned_post_ids(post_ids):
     if not post_ids:
         return {}
-    chunks = [post_ids[i : i + 200] for i in range(0, len(post_ids), 200)]
+    chunks = [post_ids[i : i + 500] for i in range(0, len(post_ids), 500)]
     scanned = {}
+    stmts = []
     for chunk in chunks:
         placeholders = ",".join("?" for _ in chunk)
-        stmt = {
-            "sql": f"SELECT post_id, url, exif_type FROM pi_scans WHERE post_id IN ({placeholders})",
-            "args": [{"type": "text", "value": str(pid)} for pid in chunk],
-        }
-        resp = await turso_execute([stmt])
-        results = resp.get("results") or []
-        if results and "response" in results[0]:
-            rows = results[0]["response"].get("result", {}).get("rows", [])
-            for row in rows:
-                pid = row[0].get("value")
-                url_val = row[1].get("value") if row[1].get("type") != "null" else ""
-                et = row[2].get("value") if row[2].get("type") != "null" else None
-                scanned[pid] = {"url": url_val, "exif_type": int(et) if et else None}
+        stmts.append(
+            {
+                "sql": f"SELECT post_id, url, exif_type FROM pi_scans WHERE post_id IN ({placeholders})",
+                "args": [{"type": "text", "value": str(pid)} for pid in chunk],
+            }
+        )
+    resp = await turso_execute(stmts)
+    for result in resp.get("results") or []:
+        if "response" not in result:
+            continue
+        rows = result["response"].get("result", {}).get("rows", [])
+        for row in rows:
+            pid = row[0].get("value")
+            url_val = row[1].get("value") if row[1].get("type") != "null" else ""
+            et = row[2].get("value") if row[2].get("type") != "null" else None
+            scanned[pid] = {"url": url_val, "exif_type": int(et) if et else None}
     return scanned
 
 
@@ -769,28 +773,45 @@ async def scan_search(req: ScanRequest, bg: BackgroundTasks):
 
 
 @app.get("/api/searches")
-async def list_searches():
+async def list_searches(page: int = 1):
+    page = max(page, 1)
+    offset = (page - 1) * SEARCH_PAGE_SIZE
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT id FROM pi_searches ORDER BY length(id) DESC, id DESC LIMIT 100"
-            }
+                "sql": "SELECT COUNT(*) FROM pi_searches"
+            },
+            {
+                "sql": "SELECT id FROM pi_searches ORDER BY id DESC LIMIT ? OFFSET ?",
+                "args": [
+                    {"type": "integer", "value": str(SEARCH_PAGE_SIZE)},
+                    {"type": "integer", "value": str(offset)},
+                ],
+            },
         ]
     )
     results = resp.get("results") or []
-    if not results or "response" not in results[0]:
-        return []
-    rows = results[0]["response"].get("result", {}).get("rows", [])
-    out = []
+    if len(results) < 2 or "response" not in results[1]:
+        return {"items": [], "total": 0, "page": page, "pages": 1}
+    count_rows = results[0].get("response", {}).get("result", {}).get("rows", [])
+    total = int(count_rows[0][0].get("value", "0")) if count_rows else 0
+    rows = results[1]["response"].get("result", {}).get("rows", [])
+    items = []
     for row in rows:
         search_id = row[0].get("value")
-        out.append(
+        items.append(
             {
                 "id": search_id,
                 "created_at": base26_to_time(search_id),
             }
         )
-    return out
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": SEARCH_PAGE_SIZE,
+        "pages": max((total + SEARCH_PAGE_SIZE - 1) // SEARCH_PAGE_SIZE, 1),
+    }
 
 
 @app.get("/api/search/{search_id}")

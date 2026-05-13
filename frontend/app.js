@@ -3,6 +3,7 @@ const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const LONG_DIGITS_RE = /\d{6,}/g
 const PAGE_SIZE = 60
+const SEARCH_PAGE_SIZE = 5
 let viewerScale = 1
 
 
@@ -68,7 +69,7 @@ function route() {
     if (parts[1]) {
       openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
     } else {
-      loadSearches()
+      loadSearches(parseInt(params.get("page")) || 1)
     }
   }
 }
@@ -79,17 +80,18 @@ function explorerHash(id, page, exifOnly) {
 }
 
 
-async function loadSearches() {
+async function loadSearches(page = 1) {
   const list = $("#search-list")
   const detail = $("#search-detail")
   detail.classList.add("hidden")
   list.innerHTML = "Loading..."
   try {
-    const [searchResp, taskResp] = await Promise.all([fetch("/api/searches"), fetch("/api/progress")])
+    const [searchResp, taskResp] = await Promise.all([fetch(`/api/searches?page=${page}`), fetch("/api/progress")])
     const data = await searchResp.json()
     const tasks = await taskResp.json()
     const active = tasks.filter(t => t.type === "search" || t.type === "search+scan" || t.type === "user_search")
-    if (!data.length && !active.length) { list.innerHTML = "No searches yet"; return }
+    const searches = data.items || []
+    if (!searches.length && !active.length) { list.innerHTML = "No searches yet"; return }
     const activeHtml = active.map(t => {
       const pct = t.total > 0 ? Math.round(t.done / t.total * 100) : 0
       const label = t.total > 0 ? `${t.done}/${t.total}` : "..."
@@ -99,7 +101,7 @@ async function loadSearches() {
         <div class="mini-bar"><div style="width:${pct}%"></div></div>
       </div>`
     }).join("")
-    const savedHtml = data.map(s => {
+    const savedHtml = searches.map(s => {
       const d = new Date(parseInt(s.created_at) * 1000)
       const ts = d.toLocaleString()
       return `<div class="search-item" data-id="${esc(s.id)}">
@@ -111,7 +113,7 @@ async function loadSearches() {
         </span>
       </div>`
     }).join("")
-    list.innerHTML = activeHtml + savedHtml
+    list.innerHTML = activeHtml + savedHtml + renderSearchPager(data)
     list.querySelectorAll(".search-item").forEach(el => {
       if (!el.dataset.id) return
       el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1, true) })
@@ -120,9 +122,24 @@ async function loadSearches() {
       if (rename) rename.addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
       if (del) del.addEventListener("click", e => { e.stopPropagation(); deleteSearch(el.dataset.id) })
     })
+    const prev = $("#search-prev")
+    const next = $("#search-next")
+    if (prev) prev.onclick = () => { location.hash = `#/explorer?page=${Math.max(page - 1, 1)}` }
+    if (next) next.onclick = () => { location.hash = `#/explorer?page=${Math.min(page + 1, data.pages)}` }
   } catch (e) {
     list.innerHTML = `Error: ${e.message}`
   }
+}
+
+function renderSearchPager(data) {
+  if (!data.total || data.pages <= 1) return ""
+  const start = (data.page - 1) * SEARCH_PAGE_SIZE + 1
+  const end = Math.min(data.page * SEARCH_PAGE_SIZE, data.total)
+  return `<div class="list-pager">
+    <button class="btn-secondary" id="search-prev" ${data.page <= 1 ? "disabled" : ""}>Prev</button>
+    <span>${start}-${end} of ${data.total} | page ${data.page}/${data.pages}</span>
+    <button class="btn-secondary" id="search-next" ${data.page >= data.pages ? "disabled" : ""}>Next</button>
+  </div>`
 }
 
 async function openSearch(id, page = 1, exifOnly = true) {
