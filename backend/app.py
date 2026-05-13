@@ -525,7 +525,7 @@ async def get_pixiv_image_url(post_id, page, size, phpsessid):
         raise HTTPException(status_code=404, detail="image not found")
     page = min(max(page, 0), len(pages) - 1)
     urls = pages[page]
-    if size == "full":
+    if size in ("full", "orig"):
         url = urls.get("original") or urls.get("regular") or urls.get("small")
     else:
         url = urls.get("regular") or urls.get("small") or urls.get("original")
@@ -543,9 +543,9 @@ async def fetch_pixiv_bytes(url, phpsessid):
             return await r.read(), r.headers.get("Content-Type") or media_type_from_url(url)
 
 
-async def create_thumb(post_id, image_url, phpsessid, page=0):
+async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
     cleanup_thumbs()
-    out = THUMB_DIR / f"{post_id}_p{page}.webp"
+    out = THUMB_DIR / f"{post_id}_p{page}_{kind}.webp"
     if out.exists():
         os.utime(out, None)
         return out
@@ -553,20 +553,25 @@ async def create_thumb(post_id, image_url, phpsessid, page=0):
     if not data:
         raise HTTPException(status_code=404, detail="image not found")
     image = Image.open(io.BytesIO(data))
-    image.thumbnail((144, 144))
+    if kind == "v":
+        image = image.resize((max(image.width // 2, 1), max(image.height // 2, 1)))
+    else:
+        image.thumbnail((360, 360))
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGB")
-    image.save(out, "WEBP", quality=70)
+    image.save(out, "WEBP", quality=82 if kind == "v" else 72)
     return out
 
 
 def image_links(post_id, url):
     page = page_num_from_url(url)
-    suffix = f"?page={page}"
+    suffix = f"?p={page}"
     pid = quote(str(post_id), safe="")
     return {
-        "image_url": f"/api/image/{pid}/thumb{suffix}",
-        "full_image_url": f"/api/image/{pid}/full{suffix}",
+        "image_url": f"/api/i/{pid}/t{suffix}",
+        "preview_url": f"/api/i/{pid}/v{suffix}",
+        "download_url": f"/api/i/{pid}/o{suffix}",
+        "full_image_url": f"/api/i/{pid}/v{suffix}",
         "page": page,
     }
 
@@ -859,10 +864,11 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
     }
 
 
-@app.get("/api/image/{post_id}/thumb")
-async def get_image_thumb(post_id: str, page: int = 0):
-    image_url = await get_pixiv_image_url(post_id, page, "thumb", PHPSESSID)
-    path = await create_thumb(post_id, image_url, PHPSESSID, page)
+@app.get("/api/i/{post_id}/t")
+async def get_image_thumb(post_id: str, p=0):
+    p = int(p or 0)
+    image_url = await get_pixiv_image_url(post_id, p, "thumb", PHPSESSID)
+    path = await create_webp(post_id, image_url, PHPSESSID, p, "t")
     return FileResponse(
         path,
         media_type="image/webp",
@@ -870,15 +876,42 @@ async def get_image_thumb(post_id: str, page: int = 0):
     )
 
 
-@app.get("/api/image/{post_id}/full")
-async def get_image_full(post_id: str, page: int = 0):
-    image_url = await get_pixiv_image_url(post_id, page, "full", PHPSESSID)
+@app.get("/api/i/{post_id}/v")
+async def get_image_preview(post_id: str, p=0):
+    p = int(p or 0)
+    image_url = await get_pixiv_image_url(post_id, p, "full", PHPSESSID)
+    path = await create_webp(post_id, image_url, PHPSESSID, p, "v")
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": f"public, max-age={THUMB_MAX_AGE}"},
+    )
+
+
+@app.get("/api/i/{post_id}/o")
+async def get_image_original(post_id: str, p=0):
+    p = int(p or 0)
+    image_url = await get_pixiv_image_url(post_id, p, "orig", PHPSESSID)
     data, content_type = await fetch_pixiv_bytes(image_url, PHPSESSID)
+    filename = urlsplit(image_url).path.rsplit("/", 1)[-1] or f"{post_id}_p{p}.png"
     return Response(
         data,
         media_type=content_type,
-        headers={"Cache-Control": f"public, max-age={THUMB_MAX_AGE}"},
+        headers={
+            "Cache-Control": f"public, max-age={THUMB_MAX_AGE}",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )
+
+
+@app.get("/api/image/{post_id}/thumb")
+async def get_long_image_thumb(post_id: str, page: int = 0, p=None):
+    return await get_image_thumb(post_id, page if p is None else p)
+
+
+@app.get("/api/image/{post_id}/full")
+async def get_long_image_full(post_id: str, page: int = 0, p=None):
+    return await get_image_preview(post_id, page if p is None else p)
 
 
 @app.get("/api/thumb/{post_id}")

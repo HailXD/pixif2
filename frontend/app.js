@@ -200,12 +200,17 @@ function renderResults(data) {
     } else {
       badge = `<span class="no-exif">NIL</span>`
     }
+    const download = item.download_url ? `<a class="download-link" href="${esc(item.download_url)}">Download</a>` : ""
     const thumb = item.image_url
-      ? `<button class="thumb" data-full="${esc(item.full_image_url)}"><img src="${esc(item.image_url)}" loading="lazy" alt="${esc(label)}"></button>`
+      ? `<button class="thumb" data-preview="${esc(item.preview_url || item.full_image_url)}" data-download="${esc(item.download_url || "")}"><img src="${esc(item.image_url)}" loading="lazy" alt="${esc(label)}"></button>`
       : ""
     return `<div class="result-card" data-pid="${pid}">
       ${thumb}
-      <span class="result-link">${label}</span><br>${badge}
+      <div class="result-meta">
+        <span class="result-link">${label}</span>
+        ${download}
+      </div>
+      ${badge}
     </div>`
   }).join("")
   grid.querySelectorAll(".result-link").forEach(el => {
@@ -215,16 +220,17 @@ function renderResults(data) {
     })
   })
   grid.querySelectorAll(".thumb").forEach(el => {
-    el.addEventListener("click", () => openViewer(el.dataset.full))
+    el.addEventListener("click", () => openViewer(el.dataset.preview, el.dataset.download))
     el.querySelector("img").addEventListener("load", () => el.classList.add("thumb-loaded"))
     el.querySelector("img").addEventListener("error", () => el.classList.add("thumb-error"))
   })
 }
 
-function openViewer(src) {
+function openViewer(src, download) {
   if (!src) return
   viewerScale = 1
   $("#viewer-img").src = src
+  $("#viewer-download").href = download || src
   $("#viewer").classList.remove("hidden")
   $("#viewer").setAttribute("aria-hidden", "false")
   applyViewerZoom()
@@ -234,6 +240,7 @@ function closeViewer() {
   $("#viewer").classList.add("hidden")
   $("#viewer").setAttribute("aria-hidden", "true")
   $("#viewer-img").src = ""
+  $("#viewer-download").href = ""
 }
 
 function applyViewerZoom() {
