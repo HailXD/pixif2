@@ -501,15 +501,18 @@ def exif_items(post_ids, scanned, exif_types=None):
     items = []
     for pid in post_ids:
         s = scanned.get(pid)
-        if not s or not s.get("exif_type"):
+        if not s:
             continue
-        if allowed is not None and s.get("exif_type") not in allowed:
+        exif_type = s.get("exif_type")
+        if exif_type is None and (allowed is None or 0 not in allowed):
+            continue
+        if exif_type is not None and allowed is not None and exif_type not in allowed:
             continue
         items.append(
             {
                 "post_id": pid,
                 "url": s.get("url"),
-                "exif_type": s.get("exif_type"),
+                "exif_type": exif_type,
                 "scanned": True,
                 **image_links(pid, s.get("url")),
             }
@@ -882,7 +885,7 @@ async def get_results(search_id: str, page: int = 1, exif_types: str = ""):
     allowed = [
         int(x)
         for x in exif_types.split(",")
-        if x.isdigit() and int(x) in EXIF_TYPE_TO_CODE.values()
+        if x.isdigit() and int(x) in (*EXIF_TYPE_TO_CODE.values(), 0)
     ]
     source = exif_items(post_ids, scanned, allowed if exif_types != "" else None)
     page = max(page, 1)

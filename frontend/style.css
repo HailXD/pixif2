@@ -242,25 +242,47 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
   color: var(--muted);
   font-size: .82rem;
 }
-.check-row {
-  display: flex;
-  align-items: center;
-  gap: .45rem;
-  color: var(--muted);
-  font-size: .85rem;
-  white-space: nowrap;
-}
-.check-row input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-}
 .exif-filters {
   display: flex;
   flex-wrap: wrap;
   justify-content: end;
-  gap: .45rem .75rem;
-  max-width: 31rem;
+  gap: .4rem;
+  max-width: 39rem;
+}
+.filter-btn, .filter-action {
+  height: 32px;
+  padding: 0 .65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .04rem;
+  text-transform: uppercase;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.filter-btn {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.filter-btn:hover, .filter-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.filter-btn.active, .filter-action.update {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #00131c;
+}
+.filter-btn.active:hover, .filter-action.update:hover {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #00131c;
+}
+.filter-action {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
 }
 #results-grid {
   display: grid;

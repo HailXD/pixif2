@@ -2,6 +2,8 @@ const $ = s => document.querySelector(s)
 const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
 const EXIF_CODES = Object.keys(EXIF_NAMES).map(Number)
+const NO_EXIF_CODE = 0
+const FILTER_CODES = [...EXIF_CODES, NO_EXIF_CODE]
 const EXIF_FILTER_KEY = "pixif2-exif-types"
 const LONG_DIGITS_RE = /\d{6,}/g
 const PAGE_SIZE = 60
@@ -175,13 +177,13 @@ function renderSearchPager(data) {
 function getExifTypes() {
   const raw = localStorage.getItem(EXIF_FILTER_KEY)
   if (raw === null) return [...EXIF_CODES]
-  const types = raw.split(",").map(Number).filter(n => EXIF_CODES.includes(n))
+  const types = raw.split(",").map(Number).filter(n => FILTER_CODES.includes(n))
   return types
 }
 
 function setExifTypes(types) {
-  const sorted = [...new Set(types)].filter(n => EXIF_CODES.includes(n)).sort((a, b) => a - b)
-  if (sorted.length === EXIF_CODES.length) {
+  const sorted = [...new Set(types)].filter(n => FILTER_CODES.includes(n)).sort((a, b) => a - b)
+  if (sorted.length === EXIF_CODES.length && sorted.every(n => EXIF_CODES.includes(n))) {
     localStorage.removeItem(EXIF_FILTER_KEY)
   } else {
     localStorage.setItem(EXIF_FILTER_KEY, sorted.join(","))
@@ -191,12 +193,25 @@ function setExifTypes(types) {
 
 function renderExifFilters(id) {
   const active = new Set(getExifTypes())
-  $("#exif-filters").innerHTML = EXIF_CODES.map(code => `<label class="check-row">
-    <input type="checkbox" value="${code}" ${active.has(code) ? "checked" : ""}> ${esc(EXIF_NAMES[code])}
-  </label>`).join("")
-  $$("#exif-filters input").forEach(input => {
-    input.onchange = () => {
-      const types = [...$$("#exif-filters input:checked")].map(el => Number(el.value))
+  const buttons = FILTER_CODES.map(code => {
+    const name = code === NO_EXIF_CODE ? "None" : EXIF_NAMES[code]
+    return `<button class="filter-btn${active.has(code) ? " active" : ""}" data-code="${code}">${esc(name)}</button>`
+  }).join("")
+  $("#exif-filters").innerHTML = `${buttons}
+    <button class="filter-action" data-action="all">Select all</button>
+    <button class="filter-action" data-action="none">Select none</button>
+    <button class="filter-action update" data-action="update">Update</button>`
+  $$("#exif-filters .filter-btn").forEach(btn => {
+    btn.onclick = () => btn.classList.toggle("active")
+  })
+  $$("#exif-filters .filter-action").forEach(btn => {
+    btn.onclick = () => {
+      const action = btn.dataset.action
+      const filters = [...$$("#exif-filters .filter-btn")]
+      if (action === "all") filters.forEach(el => el.classList.add("active"))
+      if (action === "none") filters.forEach(el => el.classList.remove("active"))
+      if (action !== "update") return
+      const types = filters.filter(el => el.classList.contains("active")).map(el => Number(el.dataset.code))
       setExifTypes(types)
       const hash = explorerHash(id, 1)
       if (location.hash === hash) openSearch(id, 1)
