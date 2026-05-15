@@ -496,11 +496,14 @@ async def get_scanned_post_ids(post_ids):
     return scanned
 
 
-def exif_items(post_ids, scanned):
+def exif_items(post_ids, scanned, exif_types=None):
+    allowed = set(exif_types) if exif_types is not None else None
     items = []
     for pid in post_ids:
         s = scanned.get(pid)
         if not s or not s.get("exif_type"):
+            continue
+        if allowed is not None and s.get("exif_type") not in allowed:
             continue
         items.append(
             {
@@ -859,7 +862,7 @@ async def get_search(search_id: str):
 
 
 @app.get("/api/results/{search_id}")
-async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
+async def get_results(search_id: str, page: int = 1, exif_types: str = ""):
     resp = await turso_execute(
         [
             {
@@ -876,20 +879,12 @@ async def get_results(search_id: str, page: int = 1, exif_only: bool = True):
         return {"error": "not found"}
     post_ids = json.loads(rows[0][0].get("value", "[]"))
     scanned = await get_scanned_post_ids(post_ids)
-    source = (
-        exif_items(post_ids, scanned)
-        if exif_only
-        else [
-            {
-                "post_id": pid,
-                "url": scanned[pid]["url"] if pid in scanned else None,
-                "exif_type": scanned[pid]["exif_type"] if pid in scanned else None,
-                "scanned": pid in scanned,
-                **image_links(pid, scanned[pid]["url"] if pid in scanned else ""),
-            }
-            for pid in post_ids
-        ]
-    )
+    allowed = [
+        int(x)
+        for x in exif_types.split(",")
+        if x.isdigit() and int(x) in EXIF_TYPE_TO_CODE.values()
+    ]
+    source = exif_items(post_ids, scanned, allowed if exif_types != "" else None)
     page = max(page, 1)
     total = len(source)
     start = (page - 1) * PAGE_SIZE

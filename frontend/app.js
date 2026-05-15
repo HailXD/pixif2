@@ -1,6 +1,8 @@
 const $ = s => document.querySelector(s)
 const $$ = s => document.querySelectorAll(s)
 const EXIF_NAMES = { 1: "novelai", 2: "sd", 3: "comfy", 4: "mj", 5: "celsys", 6: "photoshop", 7: "stealth" }
+const EXIF_CODES = Object.keys(EXIF_NAMES).map(Number)
+const EXIF_FILTER_KEY = "pixif2-exif-types"
 const LONG_DIGITS_RE = /\d{6,}/g
 const PAGE_SIZE = 60
 const SEARCH_PAGE_SIZE = 5
@@ -74,7 +76,7 @@ function route() {
   if (tab === "explorer") {
     if (parts[1]) {
       closeExplorerEvents()
-      openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1, params.get("exif") !== "0")
+      openSearch(decodeURIComponent(parts[1]), parseInt(params.get("page")) || 1)
     } else {
       loadSearches(parseInt(params.get("page")) || 1)
       openExplorerEvents()
@@ -85,8 +87,8 @@ function route() {
 }
 
 
-function explorerHash(id, page, exifOnly) {
-  return `#/explorer/${encodeURIComponent(id)}?page=${page}&exif=${exifOnly ? 1 : 0}`
+function explorerHash(id, page) {
+  return `#/explorer/${encodeURIComponent(id)}?page=${page}`
 }
 
 
@@ -127,7 +129,7 @@ async function loadSearches(page = 1) {
     list.innerHTML = activeHtml + savedHtml + renderSearchPager(data)
     list.querySelectorAll(".search-item").forEach(el => {
       if (!el.dataset.id) return
-      el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1, true) })
+      el.querySelector(".id").addEventListener("click", () => { location.hash = explorerHash(el.dataset.id, 1) })
       const rename = el.querySelector(".btn-rename")
       const del = el.querySelector(".btn-delete")
       if (rename) rename.addEventListener("click", e => { e.stopPropagation(); renameSearch(el.dataset.id) })
@@ -170,19 +172,54 @@ function renderSearchPager(data) {
   </div>`
 }
 
-async function openSearch(id, page = 1, exifOnly = true) {
+function getExifTypes() {
+  const raw = localStorage.getItem(EXIF_FILTER_KEY)
+  if (raw === null) return [...EXIF_CODES]
+  const types = raw.split(",").map(Number).filter(n => EXIF_CODES.includes(n))
+  return types
+}
+
+function setExifTypes(types) {
+  const sorted = [...new Set(types)].filter(n => EXIF_CODES.includes(n)).sort((a, b) => a - b)
+  if (sorted.length === EXIF_CODES.length) {
+    localStorage.removeItem(EXIF_FILTER_KEY)
+  } else {
+    localStorage.setItem(EXIF_FILTER_KEY, sorted.join(","))
+  }
+  return sorted
+}
+
+function renderExifFilters(id) {
+  const active = new Set(getExifTypes())
+  $("#exif-filters").innerHTML = EXIF_CODES.map(code => `<label class="check-row">
+    <input type="checkbox" value="${code}" ${active.has(code) ? "checked" : ""}> ${esc(EXIF_NAMES[code])}
+  </label>`).join("")
+  $$("#exif-filters input").forEach(input => {
+    input.onchange = () => {
+      const types = [...$$("#exif-filters input:checked")].map(el => Number(el.value))
+      setExifTypes(types)
+      const hash = explorerHash(id, 1)
+      if (location.hash === hash) openSearch(id, 1)
+      else location.hash = hash
+    }
+  })
+}
+
+async function openSearch(id, page = 1) {
   const list = $("#search-list")
   const detail = $("#search-detail")
+  const exifTypes = getExifTypes()
   list.innerHTML = ""
   detail.classList.remove("hidden")
   $("#detail-title").textContent = id
   $("#detail-stats").textContent = "Loading..."
   $("#pager").innerHTML = ""
   $("#results-grid").innerHTML = ""
-  $("#filter-exif").checked = exifOnly
+  renderExifFilters(id)
 
   try {
-    const resp = await fetch(`/api/results/${encodeURIComponent(id)}?page=${page}&exif_only=${exifOnly ? 1 : 0}`)
+    const typesParam = exifTypes.length ? exifTypes.join(",") : "none"
+    const resp = await fetch(`/api/results/${encodeURIComponent(id)}?page=${page}&exif_types=${typesParam}`)
     const data = await resp.json()
     if (data.error) { $("#detail-stats").textContent = data.error; return }
 
@@ -190,9 +227,8 @@ async function openSearch(id, page = 1, exifOnly = true) {
     $("#detail-stats").textContent = `${data.total}/${data.raw_total} shown | ${data.scanned_count}/${data.raw_total} scanned`
     if (!allScanned) resumeScan(id)
 
-    $("#filter-exif").onchange = () => { location.hash = explorerHash(id, 1, $("#filter-exif").checked) }
     $("#btn-back").onclick = () => { location.hash = "#/explorer" }
-    renderPager(id, data, exifOnly)
+    renderPager(id, data)
     renderResults(data)
   } catch (e) {
     $("#detail-stats").textContent = e.message
@@ -324,7 +360,7 @@ $("#viewer-stage").addEventListener("pointercancel", () => {
 })
 window.addEventListener("keydown", e => { if (e.key === "Escape") closeViewer() })
 
-function renderPager(id, data, exifOnly) {
+function renderPager(id, data) {
   const pager = $("#pager")
   const prev = Math.max(data.page - 1, 1)
   const next = Math.min(data.page + 1, data.pages)
@@ -333,8 +369,8 @@ function renderPager(id, data, exifOnly) {
   pager.innerHTML = `<button class="btn-secondary" id="page-prev" ${data.page <= 1 ? "disabled" : ""}>Prev</button>
     <span>${start}-${end} of ${data.total} | page ${data.page}/${data.pages}</span>
     <button class="btn-secondary" id="page-next" ${data.page >= data.pages ? "disabled" : ""}>Next</button>`
-  $("#page-prev").onclick = () => { location.hash = explorerHash(id, prev, exifOnly) }
-  $("#page-next").onclick = () => { location.hash = explorerHash(id, next, exifOnly) }
+  $("#page-prev").onclick = () => { location.hash = explorerHash(id, prev) }
+  $("#page-next").onclick = () => { location.hash = explorerHash(id, next) }
 }
 
 function esc(s) {
