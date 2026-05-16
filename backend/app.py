@@ -54,7 +54,7 @@ SEARCH_PAGE_SIZE = 5
 THUMB_MAX_AGE = 1800
 THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
 PAGE_URL_CACHE_MAX_AGE = 1800
-WEBP_SCALE = 0.2
+WEBP_SCALE = 0.4
 WEBP_QUALITY = 82
 
 app = FastAPI()
