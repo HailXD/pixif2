@@ -266,10 +266,12 @@ function pageSuffix(url) {
 
 function renderResults(data) {
   const grid = $("#results-grid")
-  grid.innerHTML = data.items.map(item => {
+  const offset = (data.page - 1) * PAGE_SIZE
+  grid.innerHTML = data.items.map((item, i) => {
     const pid = item.post_id
     const pg = item.url ? pageSuffix(item.url) : ""
     const label = pid + pg
+    const index = offset + i + 1
     let badge = ""
     if (!item.scanned) {
       badge = `<span class="not-scanned">not scanned</span>`
@@ -290,6 +292,7 @@ function renderResults(data) {
         ${download}
       </div>
       ${badge}
+      <span class="result-index">${index}</span>
     </div>`
   }).join("")
   grid.querySelectorAll(".result-link").forEach(el => {

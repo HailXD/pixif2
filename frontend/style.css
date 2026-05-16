@@ -293,8 +293,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
   padding: .25rem .15rem 1rem;
 }
 .result-card {
+  position: relative;
   min-width: 0;
-  padding: .55rem;
+  padding: .55rem .55rem 1.85rem;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -372,6 +373,15 @@ input:focus, select:focus { outline: none; border-color: var(--accent); backgrou
 .exif-5, .exif-6 { background: #232323; color: #aaa; }
 .exif-7 { background: #2a172a; color: #d9a; }
 .not-scanned, .no-exif { color: var(--dim); background: #181818; }
+.result-index {
+  position: absolute;
+  right: .55rem;
+  bottom: .45rem;
+  color: var(--dim);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: .72rem;
+  font-weight: 800;
+}
 #viewer {
   position: fixed;
   inset: 0;
