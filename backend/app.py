@@ -627,11 +627,12 @@ def image_links(post_id, url):
     page = page_num_from_url(url)
     suffix = f"?p={page}"
     pid = quote(str(post_id), safe="")
+    webp_url = f"/api/i/{pid}/v{suffix}"
     return {
-        "image_url": f"/api/i/{pid}/t{suffix}",
-        "preview_url": f"/api/i/{pid}/v{suffix}",
+        "image_url": webp_url,
+        "preview_url": webp_url,
         "download_url": f"/api/i/{pid}/o{suffix}",
-        "full_image_url": f"/api/i/{pid}/v{suffix}",
+        "full_image_url": webp_url,
         "page": page,
     }
 

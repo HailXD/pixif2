@@ -284,7 +284,7 @@ function renderResults(data) {
     }
     const download = item.download_url ? `<a class="download-link" href="${esc(item.download_url)}">Download</a>` : ""
     const thumb = item.image_url
-      ? `<button class="thumb" data-preview="${esc(item.preview_url || item.full_image_url)}" data-download="${esc(item.download_url || "")}"><img src="${esc(item.image_url)}" loading="lazy" alt="${esc(label)}"></button>`
+      ? `<button class="thumb" data-preview="${esc(item.preview_url || item.image_url)}" data-download="${esc(item.download_url || "")}"><img src="${esc(item.image_url)}" loading="lazy" alt="${esc(label)}"></button>`
       : ""
     return `<div class="result-card" data-pid="${pid}">
       ${thumb}
