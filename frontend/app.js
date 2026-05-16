@@ -55,7 +55,8 @@ $("#btn-submit").addEventListener("click", async () => {
       })
     }
     const data = await resp.json()
-    status.textContent = `Submitted as ${data.id} - you can close this page`
+    const ids = data.ids || [data.id]
+    status.textContent = `Submitted as ${ids.join(", ")} - you can close this page`
     status.className = "status-ok"
   } catch (e) {
     status.textContent = `Error: ${e.message}`

@@ -238,6 +238,8 @@ def get_search_api_url(raw, keywords):
 
 
 async def save_search(search_id, post_ids):
+    if not post_ids:
+        return
     stmt = {
         "sql": "INSERT OR REPLACE INTO pi_searches (id, post_ids) VALUES (?, ?)",
         "args": [
@@ -246,6 +248,29 @@ async def save_search(search_id, post_ids):
         ],
     }
     await turso_execute([stmt])
+
+
+def user_search_id(user_id, username):
+    label = str(username or user_id).strip() or str(user_id)
+    return f"{base26_time()}_{label}"
+
+
+async def pixiv_user_name(user_id, session):
+    data = await fetch_page(session, f"https://www.pixiv.net/ajax/user/{user_id}")
+    body = data.get("body") or {}
+    return (body.get("name") or body.get("account") or "").strip()
+
+
+async def pixiv_user_names(user_ids, phpsessid):
+    cookies = {"PHPSESSID": phpsessid}
+    async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
+        async def load_name(uid):
+            try:
+                return uid, await pixiv_user_name(uid, session)
+            except Exception:
+                return uid, ""
+
+        return dict(await asyncio.gather(*(load_name(uid) for uid in user_ids)))
 
 
 async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
@@ -282,27 +307,21 @@ async def pixiv_search_live(url, pages, mode, phpsessid, search_id):
     return post_ids, keywords, first_url
 
 
-async def pixiv_user_posts(user_ids, phpsessid):
+async def pixiv_user_posts(user_id, phpsessid):
     cookies = {"PHPSESSID": phpsessid}
-    results = []
     async with aiohttp.ClientSession(cookies=cookies, headers=PIXIV_HEADERS) as session:
-        for uid in user_ids:
-            data = await fetch_page(
-                session, f"https://www.pixiv.net/ajax/user/{uid}/profile/all"
-            )
-            body = data.get("body") or {}
-            posts = list((body.get("illusts") or {}).keys())
-            username = ""
-            pickup = body.get("pickup") or []
-            if pickup:
-                username = (pickup[0] or {}).get("userName") or ""
-            if not username:
-                udata = await fetch_page(
-                    session, f"https://www.pixiv.net/ajax/user/{uid}"
-                )
-                username = (udata.get("body") or {}).get("name") or ""
-            results.append({"user_id": uid, "post_ids": posts, "username": username})
-    return results
+        data = await fetch_page(
+            session, f"https://www.pixiv.net/ajax/user/{user_id}/profile/all"
+        )
+        body = data.get("body") or {}
+        posts = list((body.get("illusts") or {}).keys())
+        username = ""
+        pickup = body.get("pickup") or []
+        if pickup:
+            username = (pickup[0] or {}).get("userName") or ""
+        if not username:
+            username = await pixiv_user_name(user_id, session)
+        return {"user_id": user_id, "post_ids": posts, "username": username}
 
 
 async def fetch_page(session, url):
@@ -634,35 +653,42 @@ async def bg_search_task(search_id, url, pages, mode, phpsessid):
         await finish_task(search_id)
 
 
-async def bg_user_task(search_id, user_ids, phpsessid):
+async def bg_user_task(search_id, user_id, phpsessid):
     ACTIVE_TASKS[search_id] = {
         "type": "user_search",
         "phase": "searching",
-        "total": len(user_ids),
+        "total": 1,
         "done": 0,
     }
-    await discord_notify(f"`{search_id}` started (users)")
+    await discord_notify(f"`{search_id}` started (user {user_id})")
     try:
-        results = await pixiv_user_posts(user_ids, phpsessid)
-        all_post_ids = []
-        for r in results:
-            all_post_ids.extend(r["post_ids"])
-        all_post_ids = list(dict.fromkeys(all_post_ids))
-        await save_search(search_id, all_post_ids)
-        already = await get_scanned_post_ids(all_post_ids)
-        to_scan = [pid for pid in all_post_ids if pid not in already]
+        result = await pixiv_user_posts(user_id, phpsessid)
+        post_ids = list(dict.fromkeys(result["post_ids"]))
+        ACTIVE_TASKS[search_id]["done"] = 1
+        if not post_ids:
+            await discord_notify(f"`{search_id}` completed - no posts, not saved")
+            return
+        await save_search(search_id, post_ids)
+        already = await get_scanned_post_ids(post_ids)
+        to_scan = [pid for pid in post_ids if pid not in already]
         if to_scan:
             ACTIVE_TASKS[search_id].update(
                 {"phase": "scanning", "total": len(to_scan), "done": 0}
             )
             await run_scan(to_scan, phpsessid, task_id=search_id, save_live=True)
         await discord_notify(
-            f"`{search_id}` completed - {len(all_post_ids)} posts from {len(user_ids)} users"
+            f"`{search_id}` completed - {len(post_ids)} posts from user {user_id}"
         )
     except Exception as e:
         await discord_notify(f"`{search_id}` failed: {e}")
     finally:
         await finish_task(search_id)
+
+
+async def bg_user_batch_task(jobs, phpsessid):
+    await asyncio.gather(
+        *(bg_user_task(search_id, user_id, phpsessid) for search_id, user_id in jobs)
+    )
 
 
 async def bg_scan_task(search_id, post_ids, phpsessid):
@@ -762,11 +788,12 @@ async def submit_search(req: SearchRequest, bg: BackgroundTasks):
 
 @app.post("/api/submit_users")
 async def submit_users(req: UserSearchRequest, bg: BackgroundTasks):
-    search_id = base26_time()
     phpsessid = PHPSESSID
-    user_ids = [int(u) for u in req.user_ids]
-    bg.add_task(bg_user_task, search_id, user_ids, phpsessid)
-    return {"id": search_id, "status": "started"}
+    user_ids = list(dict.fromkeys(int(u) for u in req.user_ids))
+    names = await pixiv_user_names(user_ids, phpsessid)
+    jobs = [(user_search_id(uid, names.get(uid)), uid) for uid in user_ids]
+    bg.add_task(bg_user_batch_task, jobs, phpsessid)
+    return {"ids": [search_id for search_id, _ in jobs], "status": "started"}
 
 
 @app.post("/api/scan")
@@ -804,10 +831,11 @@ async def list_searches(page: int = 1):
     resp = await turso_execute(
         [
             {
-                "sql": "SELECT COUNT(*) FROM pi_searches"
+                "sql": "SELECT COUNT(*) FROM pi_searches WHERE post_ids != '[]'"
             },
             {
-                "sql": "SELECT id FROM pi_searches ORDER BY id DESC LIMIT ? OFFSET ?",
+                "sql": "SELECT id FROM pi_searches WHERE post_ids != '[]' "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
                 "args": [
                     {"type": "integer", "value": str(SEARCH_PAGE_SIZE)},
                     {"type": "integer", "value": str(offset)},
