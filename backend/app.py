@@ -54,6 +54,8 @@ SEARCH_PAGE_SIZE = 5
 THUMB_MAX_AGE = 1800
 THUMB_DIR = Path(tempfile.gettempdir()) / "pixif2-thumbs"
 PAGE_URL_CACHE_MAX_AGE = 1800
+WEBP_SCALE = 0.2
+WEBP_QUALITY = 82
 
 app = FastAPI()
 ACTIVE_TASKS = {}
@@ -584,7 +586,8 @@ async def fetch_pixiv_bytes(url, phpsessid):
 
 async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
     cleanup_thumbs()
-    out = THUMB_DIR / f"{post_id}_p{page}_{kind}.webp"
+    scale_tag = int(WEBP_SCALE * 100)
+    out = THUMB_DIR / f"{post_id}_p{page}_{kind}{scale_tag}.webp"
     if out.exists():
         os.utime(out, None)
         return out
@@ -592,13 +595,12 @@ async def create_webp(post_id, image_url, phpsessid, page=0, kind="t"):
     if not data:
         raise HTTPException(status_code=404, detail="image not found")
     image = Image.open(io.BytesIO(data))
-    if kind == "v":
-        image = image.resize((max(image.width // 2, 1), max(image.height // 2, 1)))
-    else:
-        image = image.resize((max(image.width // 3, 1), max(image.height // 3, 1)))
+    image = image.resize(
+        (max(int(image.width * WEBP_SCALE), 1), max(int(image.height * WEBP_SCALE), 1))
+    )
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGB")
-    image.save(out, "WEBP", quality=82 if kind == "v" else 72)
+    image.save(out, "WEBP", quality=WEBP_QUALITY)
     return out
 
 
