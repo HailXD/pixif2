@@ -119,11 +119,12 @@ async function loadSearches(page = 1) {
     const savedHtml = searches.map(s => {
       const d = new Date(parseInt(s.created_at) * 1000)
       const ts = d.toLocaleString()
+      const count = `${s.found_exif || 0}/${s.total_searched || 0}`
       return `<div class="search-item" data-id="${esc(s.id)}">
         <span class="id">${esc(s.id)}</span>
         <span class="time">${ts}</span>
         <span class="search-actions">
-          <span class="search-status done-mark">✓</span>
+          <span class="search-status done-mark" title="found exif / total searched">${count}</span>
           <button class="btn-icon btn-rename" title="Rename">&#9998;</button>
           <button class="btn-icon btn-delete" title="Delete">&times;</button>
         </span>

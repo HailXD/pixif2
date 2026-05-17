@@ -835,7 +835,7 @@ async def list_searches(page: int = 1):
                 "sql": "SELECT COUNT(*) FROM pi_searches WHERE post_ids != '[]'"
             },
             {
-                "sql": "SELECT id FROM pi_searches WHERE post_ids != '[]' "
+                "sql": "SELECT id, post_ids FROM pi_searches WHERE post_ids != '[]' "
                 "ORDER BY id DESC LIMIT ? OFFSET ?",
                 "args": [
                     {"type": "integer", "value": str(SEARCH_PAGE_SIZE)},
@@ -850,13 +850,28 @@ async def list_searches(page: int = 1):
     count_rows = results[0].get("response", {}).get("result", {}).get("rows", [])
     total = int(count_rows[0][0].get("value", "0")) if count_rows else 0
     rows = results[1]["response"].get("result", {}).get("rows", [])
-    items = []
+    search_posts = []
+    all_post_ids = []
+    seen = set()
     for row in rows:
+        post_ids = json.loads(row[1].get("value", "[]"))
+        search_posts.append(post_ids)
+        for pid in post_ids:
+            if pid not in seen:
+                seen.add(pid)
+                all_post_ids.append(pid)
+    scanned = await get_scanned_post_ids(all_post_ids)
+    items = []
+    for row, post_ids in zip(rows, search_posts):
         search_id = row[0].get("value")
         items.append(
             {
                 "id": search_id,
                 "created_at": base26_to_time(search_id),
+                "found_exif": sum(
+                    1 for pid in post_ids if scanned.get(pid, {}).get("exif_type")
+                ),
+                "total_searched": len(post_ids),
             }
         )
     return {
